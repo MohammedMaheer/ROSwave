@@ -247,6 +247,42 @@ class ROS2Manager:
             pass
         
         return 0.0
+    
+    def get_topics_hz_batch(self, topic_names, max_workers=4):
+        """Get Hz values for multiple topics in parallel (non-blocking)
+        
+        Args:
+            topic_names: List of topic names to get Hz for
+            max_workers: Number of parallel workers (default 4 to avoid blocking)
+            
+        Returns:
+            Dictionary mapping topic_name -> hz_value (float)
+            
+        This method is designed to be called from background threads or async contexts
+        to populate Hz values without blocking the UI thread.
+        """
+        hz_dict = {}
+        
+        if not topic_names:
+            return hz_dict
+        
+        # Use ThreadPoolExecutor to fetch Hz values in parallel
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_topic = {
+                executor.submit(self._get_topic_hz_fast, topic): topic 
+                for topic in topic_names
+            }
+            
+            # Collect results with timeout
+            for future in as_completed(future_to_topic, timeout=15.0):
+                try:
+                    topic = future_to_topic[future]
+                    hz_value = future.result(timeout=1.0)
+                    hz_dict[topic] = hz_value
+                except Exception:
+                    hz_dict[topic] = 0.0
+        
+        return hz_dict
         
     def start_recording(self, bag_name, topics=None):
         """Start recording ROS2 bags"""

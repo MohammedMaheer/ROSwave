@@ -156,12 +156,77 @@ class TopicMonitorWidget(QWidget):
         """Callback when topics data is ready from async operation"""
         try:
             self.update_topics_data(topics_info)
+            
+            # AFTER displaying topics with 0.0 Hz, fetch actual Hz values in background
+            # This keeps UI responsive while still showing accurate Hz data
+            self._start_background_hz_fetch(topics_info)
         finally:
             self._is_updating = False
             # If there was a pending update, do it now
             if self._pending_update:
                 self._pending_update = False
                 self._do_refresh()
+            
+    def _start_background_hz_fetch(self, topics_info):
+        """Start background task to fetch Hz values without blocking UI"""
+        # Extract just the topic names
+        topic_names = [t['name'] for t in topics_info]
+        
+        if not topic_names:
+            return
+        
+        # Queue Hz fetching in a background thread (max 4 concurrent workers)
+        from PyQt5.QtCore import QThreadPool, QRunnable, pyqtSlot  # type: ignore
+        
+        # Define worker class - use instance variables instead of closure
+        parent_widget = self
+        
+        class HzFetchWorker(QRunnable):
+            def __init__(self, parent, topics):
+                super().__init__()
+                self.parent = parent
+                self.topics = topics
+            
+            @pyqtSlot()
+            def run(self):
+                try:
+                    # Fetch Hz values for all topics in parallel (non-blocking)
+                    hz_dict = self.parent.ros2_manager.get_topics_hz_batch(
+                        self.topics, 
+                        max_workers=4
+                    )
+                    # Update UI with fetched Hz values
+                    self.parent._update_hz_values(hz_dict)
+                except Exception:
+                    # Silently ignore - Hz values are just a nice-to-have
+                    pass
+        
+        # Use a persistent thread pool for Hz fetching
+        if not hasattr(self, '_hz_threadpool'):
+            self._hz_threadpool = QThreadPool()
+            self._hz_threadpool.setMaxThreadCount(1)  # Don't spawn too many threads
+        
+        worker = HzFetchWorker(self, topic_names)
+        self._hz_threadpool.start(worker)
+    
+    def _update_hz_values(self, hz_dict):
+        """Update Hz column with fetched values (called from background thread via Qt)"""
+        try:
+            self.topics_table.setUpdatesEnabled(False)
+            
+            # Update each row with fetched Hz value
+            for row in range(self.topics_table.rowCount()):
+                name_item = self.topics_table.item(row, 1)
+                if name_item:
+                    topic_name = name_item.text()
+                    if topic_name in hz_dict:
+                        hz_value = hz_dict[topic_name]
+                        hz_text = f"{hz_value:.1f}"
+                        hz_item = self.topics_table.item(row, 4)
+                        if hz_item and hz_item.text() != hz_text:
+                            hz_item.setText(hz_text)
+        finally:
+            self.topics_table.setUpdatesEnabled(True)
             
     def on_topic_selected(self, topic_name, state):
         """Handle topic selection change"""
