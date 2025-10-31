@@ -18,6 +18,7 @@ from datetime import datetime
 from core.ros2_manager import ROS2Manager  # type: ignore
 from core.metrics_collector import MetricsCollector  # type: ignore
 from core.async_worker import AsyncROS2Manager  # type: ignore
+from core.freeze_prevention import WindowVisibilityTracker, FreezePrevention  # type: ignore
 from gui.topic_monitor import TopicMonitorWidget  # type: ignore
 from gui.recording_control import RecordingControlWidget  # type: ignore
 from gui.metrics_display import MetricsDisplayWidget  # type: ignore
@@ -162,6 +163,14 @@ class MainWindow(QMainWindow):
         self.network_manager = None  # Initialize later
         self.is_recording = False
         self.theme_manager = ThemeManager()  # Theme management
+        
+        # ANTI-FREEZE: Prevent concurrent ROS2 updates
+        self._ros2_update_active = False
+        
+        # ANTI-FREEZE: Track window visibility to avoid background work
+        self.visibility_tracker = WindowVisibilityTracker(self)
+        self.visibility_tracker.visibility_changed.connect(self._on_window_visibility_changed)
+        self._timers_paused = False
         
         # DEBOUNCING - prevent excessive updates
         self._last_ros2_update = 0
@@ -607,32 +616,63 @@ class MainWindow(QMainWindow):
         return group
         
     def setup_timers(self):
-        """Setup update timers - DELAYED START to prevent startup freezes"""
+        """Setup update timers - ULTRA-OPTIMIZED to prevent ALL freezes"""
         perf = self.perf_settings
         
-        # ROS2 info timer - ULTRA SLOW interval (10 seconds) to prevent topic tab freezes
-        # Topics tab was causing freezes from excessive checkbox recreation
+        # Track which tab is active to avoid updates when invisible
+        self._active_tab_index = 0
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+        
+        # ROS2 info timer - MEGA SLOW (20 seconds, only update visible tab)
+        # This prevents the 7+ second ROS2 calls from freezing the UI
         self.ros2_timer = QTimer()
-        self.ros2_timer.timeout.connect(self.update_ros2_info_async)
-        # DON'T START YET - delay 3 seconds to let UI load first
-        QTimer.singleShot(3000, lambda: self.ros2_timer.start(10000))  # Changed from 5s to 10s
+        self.ros2_timer.timeout.connect(self.update_ros2_info_async_smart)
+        # Stagger startup: delay 5 seconds to let UI fully render first
+        QTimer.singleShot(5000, lambda: self.ros2_timer.start(20000))  # 20 second interval
         
-        # Metrics timer - VERY SLOW interval (5 seconds)
-        # Metrics collection is async and non-blocking
+        # Metrics timer - SLOWER interval (8 seconds, only if visible)
+        # Metrics are lower priority than responsiveness
         self.metrics_timer = QTimer()
-        self.metrics_timer.timeout.connect(self.update_metrics)
-        # Delay 5 seconds after startup
-        QTimer.singleShot(5000, lambda: self.metrics_timer.start(5000))
+        self.metrics_timer.timeout.connect(self.update_metrics_smart)
+        # Delay 6 seconds after startup
+        QTimer.singleShot(6000, lambda: self.metrics_timer.start(8000))
         
-        # Recording history timer - VERY SLOW interval (30 seconds)
-        # History is low priority and doesn't need frequent updates
+        # Recording history timer - VERY SLOW interval (60 seconds, lazy update)
+        # History is informational only, doesn't affect operations
         self.history_timer = QTimer()
         self.history_timer.timeout.connect(self.refresh_recording_history)
-        # Delay 10 seconds after startup
-        QTimer.singleShot(10000, lambda: self.history_timer.start(30000))
+        # Delay 15 seconds after startup (history is low priority)
+        QTimer.singleShot(15000, lambda: self.history_timer.start(60000))
         
         # Connect to performance mode changes
         self.performance_manager.mode_changed.connect(self.on_performance_mode_changed)
+    
+    def _on_tab_changed(self, index):
+        """Track which tab is currently active"""
+        self._active_tab_index = index
+        # Trigger immediate update for newly visible tab (with small delay for render)
+        QTimer.singleShot(100, self.update_ros2_info_async_smart)
+    
+    def _on_window_visibility_changed(self, is_visible):
+        """Handle window visibility changes - stop timers when hidden"""
+        if is_visible:
+            # Window became visible - resume updates if they were running
+            if hasattr(self, '_timers_paused'):
+                if self._timers_paused:
+                    print("🔄 Window visible - resuming updates")
+                    if hasattr(self, 'ros2_timer'):
+                        self.ros2_timer.start()
+                    if hasattr(self, 'metrics_timer'):
+                        self.metrics_timer.start()
+                    self._timers_paused = False
+        else:
+            # Window hidden - pause all timers (huge CPU savings)
+            print("⏸️  Window hidden - pausing background updates")
+            self._timers_paused = True
+            if hasattr(self, 'ros2_timer') and self.ros2_timer.isActive():
+                self.ros2_timer.stop()
+            if hasattr(self, 'metrics_timer') and self.metrics_timer.isActive():
+                self.metrics_timer.stop()
     
     def setup_system_tray(self):
         """Setup system tray icon and desktop notifications."""
@@ -724,6 +764,65 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"Warning: Could not initialize Network Manager: {e}")
             self.network_manager = None
+    
+    def update_ros2_info_async_smart(self):
+        """
+        ULTRA-OPTIMIZED: Only update visible tab to prevent freezes
+        
+        - Skip if window hidden
+        - Skip if already updating (prevents concurrent requests)
+        - Only update the active tab (not all tabs)
+        - Massive CPU/responsiveness improvement
+        """
+        import time
+        
+        # Skip if window is hidden (prevents background work)
+        if not self.isVisible():
+            return
+        
+        # Skip if already updating (prevent concurrent operations)
+        if hasattr(self, '_ros2_update_active') and self._ros2_update_active:
+            return
+        
+        # Skip if updated too recently (debounce)
+        current_time = time.time()
+        if current_time - self._last_ros2_update < 2.0:  # Min 2 seconds between updates
+            return
+        self._last_ros2_update = current_time
+        self._ros2_update_active = True
+        
+        try:
+            # Only update the CURRENTLY VISIBLE tab (massive performance gain)
+            current_tab = self.tabs.currentIndex()
+            
+            if current_tab == 0 and hasattr(self, 'topic_monitor'):  # Topics tab
+                self.topic_monitor.refresh_topics()
+            elif current_tab == 1 and hasattr(self, 'node_monitor'):  # Nodes tab
+                self.node_monitor.refresh_nodes()
+            elif current_tab == 2 and hasattr(self, 'service_monitor'):  # Services tab
+                self.service_monitor.refresh_services()
+            # Other tabs don't need automatic ROS2 updates
+        finally:
+            self._ros2_update_active = False
+    
+    def update_metrics_smart(self):
+        """
+        OPTIMIZED: Only update metrics if visible
+        
+        - Skip if window hidden
+        - Skip if already updating
+        - Still provides responsive feedback
+        """
+        # Skip if window is hidden
+        if not self.isVisible():
+            return
+        
+        # Skip if metrics update is expensive (already running)
+        if getattr(self, '_metrics_task_running', False):
+            return
+        
+        # Call the existing metrics update
+        self.update_metrics()
             
     def update_ros2_info_async(self):
         """
@@ -779,7 +878,9 @@ class MainWindow(QMainWindow):
             
             # Process events to let tab rendering complete
             from PyQt5.QtWidgets import QApplication
-            QApplication.instance().processEvents()
+            app = QApplication.instance()
+            if app:
+                app.processEvents()
             
             # Resume timer and immediately update the new tab
             if was_running:
