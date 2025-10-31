@@ -57,6 +57,7 @@ class LiveChartsWidget(QWidget):
         
         # Create chart grid
         charts_layout = QGridLayout()
+        charts_layout.setSpacing(10)  # Add spacing between charts
         
         # Recording Metrics Charts (Row 1)
         self.msg_rate_plot = self.create_plot(
@@ -102,9 +103,15 @@ class LiveChartsWidget(QWidget):
         )
         charts_layout.addWidget(self.disk_write_plot, 1, 2)
         
+        # Set equal stretch for all rows and columns to distribute space evenly
+        for row in range(2):
+            charts_layout.setRowStretch(row, 1)
+        for col in range(3):
+            charts_layout.setColumnStretch(col, 1)
+        
         charts_group = QGroupBox("Real-Time Performance Monitoring")
         charts_group.setLayout(charts_layout)
-        layout.addWidget(charts_group)
+        layout.addWidget(charts_group, 1)  # Give charts more space in main layout
         
         # Statistics panel
         stats = self.create_statistics_panel()
@@ -159,13 +166,17 @@ class LiveChartsWidget(QWidget):
         return group
         
     def create_plot(self, title, y_label, color='#2196F3'):
-        """Create a single plot widget"""
+        """Create a single plot widget with proper sizing"""
         plot_widget = pg.PlotWidget()
         plot_widget.setBackground('w')
         plot_widget.setTitle(title, color='#333', size='12pt')
         plot_widget.setLabel('left', y_label, color='#333')
         plot_widget.setLabel('bottom', 'Time (seconds)', color='#333')
         plot_widget.showGrid(x=True, y=True, alpha=0.3)
+        
+        # CRITICAL: Set minimum height so charts don't compress into thin lines
+        plot_widget.setMinimumHeight(250)
+        plot_widget.setMinimumWidth(300)
         
         # Create plot curve
         pen = pg.mkPen(color=color, width=2)

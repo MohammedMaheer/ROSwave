@@ -1,3 +1,4 @@
+# pyright: reportAttributeAccessIssue=false
 """
 Recording Control Widget - controls for starting/stopping ROS2 bag recording
 """
@@ -35,32 +36,38 @@ class HzMonitorThread(QThread):
         """Monitor Hz of topics in background"""
         self.is_running = True
         consecutive_errors = 0
-        
+        # Use a ThreadPoolExecutor to parallelize subprocess calls and reduce overall latency
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         while self.is_running:
             try:
                 with self._lock:
                     topics = list(self.topics_to_monitor)
-                
+
                 if not topics:
                     time.sleep(0.5)
                     continue
-                
-                # Get Hz for all topics rapidly
+
                 hz_rates = {}
-                for topic_name in topics:
-                    try:
-                        hz = self._get_hz_for_topic(topic_name)
+
+                max_workers = min(8, max(1, len(topics)))
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    future_map = {executor.submit(self._get_hz_for_topic, t): t for t in topics}
+                    for future in as_completed(future_map, timeout=None):
+                        topic_name = future_map[future]
+                        try:
+                            hz = future.result()
+                        except Exception:
+                            hz = 0.0
                         hz_rates[topic_name] = hz
-                    except Exception as e:
-                        hz_rates[topic_name] = 0.0
-                
+
                 # Emit results
                 if hz_rates:
                     self.hz_updated.emit(hz_rates)
-                
+
                 consecutive_errors = 0
                 time.sleep(1.0)  # Update every second
-                
+
             except Exception as e:
                 consecutive_errors += 1
                 if consecutive_errors > 5:
@@ -117,7 +124,7 @@ class RecordingControlWidget(QWidget):
         self.current_bag_name = None
         self.current_bag_metadata = None
         self._last_rates_update = 0
-        self._rates_update_cooldown = 1.0  # Don't update more than once per second
+        self._rates_update_cooldown = 5.0  # 5 seconds minimum - VERY infrequent updates to prevent blocking
         
         # Initialize Hz monitor thread (runs continuously in background)
         self.hz_monitor_thread = HzMonitorThread(ros2_manager)
@@ -208,11 +215,12 @@ class RecordingControlWidget(QWidget):
             'Topic Name', 'Message Type', 'Rate (Hz)', 'Data Status', 'Alert'
         ])
         header = self.selected_topics_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        if header is not None:
+            header.setSectionResizeMode(0, QHeaderView.Stretch)
+            header.setSectionResizeMode(1, QHeaderView.Stretch)
+            header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
         
         # MUCH LARGER - 350 pixels instead of 200
         self.selected_topics_table.setMinimumHeight(350)
@@ -439,23 +447,22 @@ class RecordingControlWidget(QWidget):
             self.topic_rates_timer.stop()
             return
         
-        # DEBOUNCE - prevent excessive calls
+        # DEBOUNCE - prevent excessive calls (AGGRESSIVE - 2 second minimum)
         current_time = time.time()
         if current_time - self._last_rates_update < self._rates_update_cooldown:
             return
         self._last_rates_update = current_time
         
-        # Use async manager if available, otherwise fall back to sync (with fast fail)
+        # Only use async manager - NEVER call synchronously during recording
         if self.async_ros2_manager:
+            # Check if a previous async call is still pending
+            if self.async_ros2_manager.active_thread_count() > 0:
+                # Skip this update - wait for previous one to complete
+                return
+            
             # Call async to prevent UI blocking
             self.async_ros2_manager.get_topics_async(self._on_topics_info_received)
-        else:
-            # Fallback: call sync but with timeout handling
-            try:
-                topics_info = self.ros2_manager.get_topics_info()
-                self._process_topics_info(topics_info)
-            except Exception as e:
-                print(f"Error updating topic rates: {e}")
+        # NOTE: Removed fallback sync call - it was causing freezes!
     
     def _on_topics_info_received(self, topics_info):
         """Callback when topics info is received from async worker"""
@@ -535,9 +542,10 @@ class RecordingControlWidget(QWidget):
             print(f"Error in Hz update callback: {e}")
     
     def start_rate_monitoring(self):
-        """Start monitoring topic rates"""
+        """Start monitoring topic rates - VERY INFREQUENT to eliminate freezing"""
         if not self.topic_rates_timer.isActive() and self.selected_topics_data:
-            self.topic_rates_timer.start(1000)  # Update every second
+            # 5 seconds = almost no subprocess calls, use cache instead
+            self.topic_rates_timer.start(5000)  # Update every 5 seconds (was 2 seconds)
     
     def stop_rate_monitoring(self):
         """Stop monitoring topic rates"""

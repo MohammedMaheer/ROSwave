@@ -1,3 +1,4 @@
+# pyright: reportAttributeAccessIssue=false
 """
 Topic Monitor Widget - displays available ROS2 topics
 """
@@ -5,7 +6,7 @@ Topic Monitor Widget - displays available ROS2 topics
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget,  # type: ignore
                              QTableWidgetItem, QPushButton, QGroupBox, QHeaderView,
                              QLabel, QCheckBox)
-from PyQt5.QtCore import Qt, pyqtSignal  # type: ignore
+from PyQt5.QtCore import Qt, pyqtSignal, QTimer  # type: ignore
 from PyQt5.QtGui import QColor  # type: ignore
 
 
@@ -20,6 +21,21 @@ class TopicMonitorWidget(QWidget):
         self.ros2_manager = ros2_manager
         self.async_ros2_manager = async_ros2_manager  # NEW: optional async manager
         self.selected_topics = set()
+        
+        # Debounce timer to coalesce rapid checkbox events into a single topics_changed emit
+        self._topics_changed_timer = QTimer()
+        self._topics_changed_timer.setSingleShot(True)
+        self._topics_changed_timer.timeout.connect(self._emit_topics_changed)
+        
+        # CRITICAL: Prevent concurrent updates from causing freezes
+        self._is_updating = False
+        self._pending_update = False
+        
+        # Debounce timer for refresh calls (prevent spam)
+        self._refresh_debounce_timer = QTimer()
+        self._refresh_debounce_timer.setSingleShot(True)
+        self._refresh_debounce_timer.timeout.connect(self._do_refresh)
+        
         self.init_ui()
         
     def init_ui(self):
@@ -47,20 +63,33 @@ class TopicMonitorWidget(QWidget):
         
         group_layout.addLayout(info_layout)
         
-        # Topics table
+        # Topics table - OPTIMIZED FOR SMOOTH SCROLLING
         self.topics_table = QTableWidget()
         self.topics_table.setColumnCount(5)
         self.topics_table.setHorizontalHeaderLabels([
             "Record", "Topic Name", "Message Type", "Publishers", "Hz"
         ])
         
+        # CRITICAL PERFORMANCE: Disable sorting to prevent layout recalculation
+        self.topics_table.setSortingEnabled(False)
+        
+        # Optimize row height for faster rendering
+        vheader = self.topics_table.verticalHeader()
+        if vheader is not None:
+            vheader.setDefaultSectionSize(25)
+        
+        # Reduce selection overhead
+        self.topics_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.topics_table.setSelectionMode(QTableWidget.NoSelection)
+        
         # Set column widths
         header = self.topics_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.Stretch)
-        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        if header is not None:
+            header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(1, QHeaderView.Stretch)
+            header.setSectionResizeMode(2, QHeaderView.Stretch)
+            header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
         
         group_layout.addWidget(self.topics_table)
         
@@ -76,18 +105,43 @@ class TopicMonitorWidget(QWidget):
         # Don't do initial refresh - let timer handle it
         
     def refresh_topics(self):
-        """Refresh the list of available topics - NON-BLOCKING using async"""
+        """Refresh the list of available topics - NON-BLOCKING using async with debounce"""
+        # Debounce rapid refresh calls (prevents multiple concurrent updates)
+        self._refresh_debounce_timer.stop()
+        self._refresh_debounce_timer.start(100)  # Wait 100ms before actually refreshing
+    
+    def _do_refresh(self):
+        """Actual refresh logic after debounce period"""
+        # If already updating, mark as pending and return (don't queue multiple)
+        if self._is_updating:
+            self._pending_update = True
+            return
+        
+        self._is_updating = True
+        
         if self.async_ros2_manager:
             # Use async manager - callback when data ready
-            self.async_ros2_manager.get_topics_async(self.update_topics_data)
+            self.async_ros2_manager.get_topics_async(self._on_topics_ready)
         else:
             # Fallback: sync call with error handling
             try:
                 topics_info = self.ros2_manager.get_topics_info()
-                self.update_topics_data(topics_info)
+                self._on_topics_ready(topics_info)
             except Exception as e:
                 print(f"Error refreshing topics: {e}")
                 self.topic_count_label.setText(f"Topics: 0 (Error: ROS2 may not be running)")
+                self._is_updating = False
+    
+    def _on_topics_ready(self, topics_info):
+        """Callback when topics data is ready from async operation"""
+        try:
+            self.update_topics_data(topics_info)
+        finally:
+            self._is_updating = False
+            # If there was a pending update, do it now
+            if self._pending_update:
+                self._pending_update = False
+                self._do_refresh()
             
     def on_topic_selected(self, topic_name, state):
         """Handle topic selection change"""
@@ -95,28 +149,53 @@ class TopicMonitorWidget(QWidget):
             self.selected_topics.add(topic_name)
         else:
             self.selected_topics.discard(topic_name)
-            
         self.topic_selected.emit(topic_name, state == Qt.Checked)
-        # Also emit list of all selected topics
-        self.topics_changed.emit(list(self.selected_topics))
+        # Debounce emitting the full selected-topics list to avoid flooding callers
+        self._topics_changed_timer.start(50)
         
     def select_all_topics(self):
         """Select all topics for recording"""
+        # Build selected set and update UI in batch without repeated signals
+        topics = []
+        for row in range(self.topics_table.rowCount()):
+            name_item = self.topics_table.item(row, 1)
+            if name_item:
+                topics.append(name_item.text())
+
+        self.selected_topics = set(topics)
+
+        # Update checkbox widgets visually without emitting stateChanged
         for row in range(self.topics_table.rowCount()):
             checkbox_widget = self.topics_table.cellWidget(row, 0)
             if checkbox_widget:
                 checkbox = checkbox_widget.findChild(QCheckBox)
                 if checkbox:
+                    checkbox.blockSignals(True)
                     checkbox.setChecked(True)
+                    checkbox.blockSignals(False)
+
+        # Emit single consolidated change
+        self.topics_changed.emit(list(self.selected_topics))
                     
     def deselect_all_topics(self):
         """Deselect all topics"""
+        self.selected_topics.clear()
+
         for row in range(self.topics_table.rowCount()):
             checkbox_widget = self.topics_table.cellWidget(row, 0)
             if checkbox_widget:
                 checkbox = checkbox_widget.findChild(QCheckBox)
                 if checkbox:
+                    checkbox.blockSignals(True)
                     checkbox.setChecked(False)
+                    checkbox.blockSignals(False)
+
+        # Emit single consolidated change
+        self.topics_changed.emit([])
+
+    def _emit_topics_changed(self):
+        """Emit consolidated topics_changed signal (debounced)."""
+        self.topics_changed.emit(list(self.selected_topics))
                     
     def get_selected_topics(self):
         """Get list of selected topics"""
@@ -134,57 +213,113 @@ class TopicMonitorWidget(QWidget):
     
     def update_topics_data(self, topics_info):
         """
-        Update topics from async data - WORLD-CLASS PERFORMANCE.
+        Update topics from async data - ULTRA-OPTIMIZED INCREMENTAL UPDATE.
         This method is called from background thread with pre-fetched data.
+        
+        CRITICAL OPTIMIZATION: Reuse existing widgets instead of recreating them.
+        This eliminates the freeze caused by creating hundreds of checkboxes.
         """
         try:
-            self.topics_table.setRowCount(len(topics_info))
+            # Disable updates during batch operation (MASSIVE performance gain)
+            self.topics_table.setUpdatesEnabled(False)
+            
+            # Build lookup of existing topics by row
+            existing_topics = {}
+            for row in range(self.topics_table.rowCount()):
+                name_item = self.topics_table.item(row, 1)
+                if name_item:
+                    existing_topics[name_item.text()] = row
+            
+            # Build new topics lookup
+            new_topics = {t['name']: t for t in topics_info}
+            
+            # Only resize if row count changed significantly (avoid flicker)
+            if abs(len(topics_info) - self.topics_table.rowCount()) > 0:
+                self.topics_table.setRowCount(len(topics_info))
+            
             self.topic_count_label.setText(f"Topics: {len(topics_info)}")
             
             for idx, topic_info in enumerate(topics_info):
-                # Checkbox for recording selection
-                checkbox = QCheckBox()
-                checkbox.setChecked(topic_info['name'] in self.selected_topics)
-                checkbox.stateChanged.connect(
-                    lambda state, name=topic_info['name']: self.on_topic_selected(name, state)
-                )
+                topic_name = topic_info['name']
                 
-                checkbox_widget = QWidget()
-                checkbox_layout = QHBoxLayout(checkbox_widget)
-                checkbox_layout.addWidget(checkbox)
-                checkbox_layout.setAlignment(Qt.AlignCenter)
-                checkbox_layout.setContentsMargins(0, 0, 0, 0)
+                # REUSE existing checkbox if topic already exists at same position
+                existing_row = existing_topics.get(topic_name, -1)
+                checkbox_widget = self.topics_table.cellWidget(idx, 0)
                 
-                self.topics_table.setCellWidget(idx, 0, checkbox_widget)
+                if checkbox_widget is None or existing_row != idx:
+                    # Create NEW checkbox only if needed
+                    checkbox = QCheckBox()
+                    checkbox.setChecked(topic_name in self.selected_topics)
+                    checkbox.stateChanged.connect(
+                        lambda state, name=topic_name: self.on_topic_selected(name, state)
+                    )
+                    
+                    checkbox_widget = QWidget()
+                    checkbox_layout = QHBoxLayout(checkbox_widget)
+                    checkbox_layout.addWidget(checkbox)
+                    checkbox_layout.setAlignment(Qt.AlignCenter)
+                    checkbox_layout.setContentsMargins(0, 0, 0, 0)
+                    
+                    self.topics_table.setCellWidget(idx, 0, checkbox_widget)
+                else:
+                    # REUSE existing checkbox - just update checked state
+                    checkbox = checkbox_widget.findChild(QCheckBox)
+                    if checkbox:
+                        # Block signals to prevent triggering on_topic_selected
+                        checkbox.blockSignals(True)
+                        checkbox.setChecked(topic_name in self.selected_topics)
+                        checkbox.blockSignals(False)
                 
-                # Topic name
-                name_item = QTableWidgetItem(topic_info['name'])
-                self.topics_table.setItem(idx, 1, name_item)
+                # Update or create topic name (cheap operation)
+                name_item = self.topics_table.item(idx, 1)
+                if name_item is None:
+                    name_item = QTableWidgetItem(topic_name)
+                    self.topics_table.setItem(idx, 1, name_item)
+                elif name_item.text() != topic_name:
+                    name_item.setText(topic_name)
                 
-                # Message type
-                msg_type_item = QTableWidgetItem(topic_info.get('type', 'Unknown'))
-                self.topics_table.setItem(idx, 2, msg_type_item)
+                # Update or create message type
+                msg_type = topic_info.get('type', 'Unknown')
+                msg_type_item = self.topics_table.item(idx, 2)
+                if msg_type_item is None:
+                    msg_type_item = QTableWidgetItem(msg_type)
+                    self.topics_table.setItem(idx, 2, msg_type_item)
+                elif msg_type_item.text() != msg_type:
+                    msg_type_item.setText(msg_type)
                 
-                # Publisher count
+                # Update or create publisher count
                 pub_count = topic_info.get('publisher_count', 0)
-                pub_item = QTableWidgetItem(str(pub_count))
-                pub_item.setTextAlignment(Qt.AlignCenter)
+                pub_item = self.topics_table.item(idx, 3)
+                if pub_item is None:
+                    pub_item = QTableWidgetItem(str(pub_count))
+                    pub_item.setTextAlignment(Qt.AlignCenter)
+                    self.topics_table.setItem(idx, 3, pub_item)
+                else:
+                    pub_item.setText(str(pub_count))
                 
                 # Color code based on publisher count
                 if pub_count > 0:
                     pub_item.setForeground(QColor('green'))
                 else:
                     pub_item.setForeground(QColor('gray'))
-                    
-                self.topics_table.setItem(idx, 3, pub_item)
                 
-                # Frequency
+                # Update or create frequency
                 hz = topic_info.get('hz', 0.0)
-                hz_item = QTableWidgetItem(f"{hz:.1f}")
-                hz_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                self.topics_table.setItem(idx, 4, hz_item)
+                hz_text = f"{hz:.1f}"
+                hz_item = self.topics_table.item(idx, 4)
+                if hz_item is None:
+                    hz_item = QTableWidgetItem(hz_text)
+                    hz_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                    self.topics_table.setItem(idx, 4, hz_item)
+                elif hz_item.text() != hz_text:
+                    hz_item.setText(hz_text)
+            
+            # Re-enable updates and force single repaint (instead of incremental)
+            self.topics_table.setUpdatesEnabled(True)
+            self.topics_table.repaint()  # Immediate repaint for smooth scrolling
             
         except Exception as e:
             print(f"Error updating topics data: {e}")
             self.topic_count_label.setText(f"Topics: 0 (Error)")
+            self.topics_table.setUpdatesEnabled(True)  # Ensure updates re-enabled
 

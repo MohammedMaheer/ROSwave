@@ -28,6 +28,8 @@ class UploadTask:
         self.created_at = time.time()
         self.retry_count = 0
         self.last_error = None
+        self.last_chunk_time = None  # Track last successful chunk for timeout detection
+        self.chunks_since_progress = 0  # Count chunks without progress for stall detection
         
     def __lt__(self, other):
         # For priority queue comparison
@@ -85,6 +87,11 @@ class NetworkManager:
         self.retry_delay = 10  # seconds
         self.max_concurrent_uploads = 2
         self.bandwidth_limit = None  # bytes/second (None = unlimited)
+        
+        # Timeout configuration
+        self.upload_timeout = 300  # 5 minutes timeout for chunk uploads
+        self.init_timeout = 10  # seconds for init/finalize
+        self.stalled_timeout = 60  # Mark transfer as stalled after 60s without progress
         
         # Load pending uploads from database
         self._load_pending_uploads()
@@ -383,23 +390,34 @@ class NetworkManager:
                     'filesize': file_size,
                     'chunks': task.total_chunks,
                     'metadata': task.metadata,
-                    'checksum': self._calculate_checksum(task.file_path)
+                    'checksum': self._calculate_checksum(task.file_path),
+                    'compression': file_size >= 10 * 1024 * 1024  # Compression for large files
                 },
-                timeout=10
+                timeout=self.init_timeout
             )
             
             if response.status_code == 200:
                 data = response.json()
+                task.last_chunk_time = time.time()  # Initialize progress timer
                 return data.get('upload_id')
                 
+        except requests.Timeout:
+            print(f"⏱️ Timeout initializing upload for {task.file_path}")
+            raise Exception("Upload initialization timeout")
         except Exception as e:
             print(f"Failed to initialize upload: {e}")
             
         return None
         
     def _upload_chunk(self, task, chunk_index, chunk_data):
-        """Upload a single chunk"""
+        """Upload a single chunk with timeout and stall detection"""
         try:
+            # Check for stalled transfer (no progress for extended time)
+            current_time = time.time()
+            if task.last_chunk_time and (current_time - task.last_chunk_time) > self.stalled_timeout:
+                print(f"⏱️ Stalled upload detected for {task.file_path} (no progress for {self.stalled_timeout}s)")
+                raise Exception("Upload stalled - no progress detected")
+            
             files = {
                 'chunk': (f'chunk_{chunk_index}', chunk_data)
             }
@@ -414,11 +432,21 @@ class NetworkManager:
                 f"{self.upload_url}/chunk",
                 files=files,
                 data=data,
-                timeout=30
+                timeout=self.upload_timeout
             )
             
-            return response.status_code == 200
+            if response.status_code == 200:
+                # Reset stall detector on successful chunk
+                task.last_chunk_time = time.time()
+                task.chunks_since_progress = 0
+                return True
+            else:
+                task.chunks_since_progress += 1
+                return False
             
+        except requests.Timeout:
+            print(f"⏱️ Timeout uploading chunk {chunk_index} for {task.file_path}")
+            raise Exception(f"Chunk upload timeout after {self.upload_timeout}s")
         except Exception as e:
             print(f"Failed to upload chunk {chunk_index}: {e}")
             return False
@@ -432,11 +460,17 @@ class NetworkManager:
                     'upload_id': task.upload_id,
                     'checksum': self._calculate_checksum(task.file_path)
                 },
-                timeout=10
+                timeout=self.init_timeout
             )
             
-            return response.status_code == 200
+            if response.status_code == 200:
+                task.last_chunk_time = time.time()
+                return True
+            return False
             
+        except requests.Timeout:
+            print(f"⏱️ Timeout finalizing upload for {task.file_path}")
+            raise Exception("Upload finalization timeout")
         except Exception as e:
             print(f"Failed to finalize upload: {e}")
             return False

@@ -6,7 +6,7 @@ Automatically adjusts settings based on system specifications
 import psutil
 import platform
 from enum import Enum
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from PyQt5.QtCore import QObject, pyqtSignal  # type: ignore
 
 
@@ -25,7 +25,7 @@ class PerformanceModeManager(QObject):
     
     def __init__(self):
         super().__init__()
-        self._current_mode = None
+        self._current_mode: PerformanceMode = PerformanceMode.BALANCED
         self._custom_settings = None
         
         # Detect system specs
@@ -52,9 +52,12 @@ class PerformanceModeManager(QObject):
                 import time
                 time.sleep(0.1)
                 disk_io_end = psutil.disk_io_counters()
-                read_speed = (disk_io_end.read_bytes - disk_io_start.read_bytes) / 0.1
-                is_ssd = read_speed > 100 * 1024 * 1024  # >100MB/s suggests SSD
-            except:
+                if disk_io_start and disk_io_end:
+                    read_speed = (disk_io_end.read_bytes - disk_io_start.read_bytes) / 0.1
+                    is_ssd = read_speed > 100 * 1024 * 1024  # >100MB/s suggests SSD
+                else:
+                    is_ssd = False
+            except Exception:
                 is_ssd = False
             
             return {
@@ -95,7 +98,7 @@ class PerformanceModeManager(QObject):
         else:
             return PerformanceMode.BALANCED
     
-    def get_mode_settings(self, mode: PerformanceMode = None) -> Dict[str, Any]:
+    def get_mode_settings(self, mode: Optional[PerformanceMode] = None) -> Dict[str, Any]:
         """Get settings for specified mode (or current mode)"""
         if mode is None:
             mode = self._current_mode
@@ -221,7 +224,7 @@ class PerformanceModeManager(QObject):
         """Get current performance mode"""
         return self._current_mode
     
-    def get_mode_description(self, mode: PerformanceMode = None) -> str:
+    def get_mode_description(self, mode: Optional[PerformanceMode] = None) -> str:
         """Get human-readable description of mode"""
         if mode is None:
             mode = self._current_mode

@@ -1,3 +1,5 @@
+# pyright: reportAttributeAccessIssue=false
+
 """
 Main Window for ROS2 Dashboard
 """
@@ -6,8 +8,8 @@ from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,   #
                              QPushButton, QLabel, QTableWidget, QTableWidgetItem,
                              QGroupBox, QGridLayout, QStatusBar, QSplitter,
                              QMessageBox, QFileDialog, QHeaderView, QTabWidget, QShortcut,
-                             QSystemTrayIcon, QMenu)
-from PyQt5.QtCore import Qt, QTimer, pyqtSlot  # type: ignore
+                             QSystemTrayIcon, QMenu, QScrollArea, QAction)
+from PyQt5.QtCore import Qt, QTimer, pyqtSlot, QObject, QRunnable, QThreadPool, pyqtSignal, QEvent  # type: ignore
 from PyQt5.QtGui import QFont, QColor, QKeySequence  # type: ignore
 import os
 import json
@@ -22,7 +24,6 @@ from gui.metrics_display import MetricsDisplayWidget  # type: ignore
 from gui.node_monitor import NodeMonitorWidget  # type: ignore
 from gui.service_monitor import ServiceMonitorWidget  # type: ignore
 from gui.topic_echo import TopicEchoWidget  # type: ignore
-from gui.bag_playback import BagPlaybackWidget  # type: ignore
 from gui.advanced_stats import AdvancedStatsWidget  # type: ignore
 from gui.network_upload import NetworkUploadWidget  # type: ignore
 from gui.live_charts import LiveChartsWidget  # type: ignore
@@ -34,6 +35,78 @@ from core.recording_triggers import SmartRecordingManager  # type: ignore
 from core.performance_profiler import PerformanceProfiler  # type: ignore
 from core.performance_modes import PerformanceModeManager, PerformanceMode  # type: ignore
 from gui.performance_settings_dialog import PerformanceSettingsDialog  # type: ignore
+
+
+class MetricsWorkerSignals(QObject):
+    """Signals used by the background metrics worker."""
+
+    finished = pyqtSignal(dict)
+    error = pyqtSignal(str)
+
+
+class MetricsWorker(QRunnable):
+    """Background worker that updates metrics off the GUI thread."""
+
+    def __init__(self, metrics_collector, ros2_manager, is_recording: bool):
+        super().__init__()
+        self.metrics_collector = metrics_collector
+        self.ros2_manager = ros2_manager
+        self.is_recording = is_recording
+        self.signals = MetricsWorkerSignals()
+
+    @pyqtSlot()
+    def run(self):
+        """Perform the heavy metrics update in a worker thread."""
+        try:
+            if self.is_recording:
+                self.metrics_collector.update(self.ros2_manager)
+                metrics = self.metrics_collector.get_metrics()
+            else:
+                metrics = self.metrics_collector.get_live_metrics(self.ros2_manager)
+            self.signals.finished.emit(metrics)
+        except Exception as exc:  # pragma: no cover - defensive guard
+            self.signals.error.emit(str(exc))
+
+
+class HistoryWorkerSignals(QObject):
+    """Signals for background history refresh worker."""
+
+    finished = pyqtSignal(list)
+    error = pyqtSignal(str)
+
+
+class HistoryWorker(QRunnable):
+    """Scans recording directory and collects bag info off the GUI thread."""
+
+    def __init__(self, ros2_manager):
+        super().__init__()
+        self.ros2_manager = ros2_manager
+        self.signals = HistoryWorkerSignals()
+
+    @pyqtSlot()
+    def run(self):
+        import os
+        try:
+            recordings_dir = self.ros2_manager.get_recordings_directory()
+            if not recordings_dir or not os.path.exists(recordings_dir):
+                self.signals.finished.emit([])
+                return
+
+            bag_paths = []
+            for root, dirs, files in os.walk(recordings_dir):
+                if 'metadata.yaml' in files:
+                    bag_paths.append(root)
+
+            rows = []
+            for path in bag_paths:
+                info = self.ros2_manager.get_bag_info(path)
+                rows.append({'path': path, 'info': info})
+
+            # Sort newest first by path name (timestamp usually in path)
+            rows.sort(key=lambda r: r['path'], reverse=True)
+            self.signals.finished.emit(rows)
+        except Exception as exc:  # pragma: no cover
+            self.signals.error.emit(str(exc))
 
 
 class MainWindow(QMainWindow):
@@ -60,6 +133,10 @@ class MainWindow(QMainWindow):
             cache_timeout=self.perf_settings['cache_timeout']
         )
         self.metrics_collector = MetricsCollector()
+        self.metrics_thread_pool = QThreadPool()
+        self._metrics_task_running = False
+        self.history_thread_pool = QThreadPool()
+        self._history_task_running = False
         self.network_manager = None  # Initialize later
         self.is_recording = False
         self.theme_manager = ThemeManager()  # Theme management
@@ -75,7 +152,10 @@ class MainWindow(QMainWindow):
         self.setup_system_tray()  # Setup notifications
         
         # Start network manager after UI is ready (non-blocking)
-        QTimer.singleShot(1000, self.init_network_manager)
+        QTimer.singleShot(2000, self.init_network_manager)
+        
+        # Pre-populate cache in background after UI is fully loaded
+        QTimer.singleShot(1500, self._warmup_cache)
         
     def init_ui(self):
         """Initialize the user interface"""
@@ -89,14 +169,19 @@ class MainWindow(QMainWindow):
         # Main layout
         main_layout = QVBoxLayout(central_widget)
         
-        # Title
+        # Title with window control buttons
         title = QLabel("ROS2 Bags Recording Dashboard")
         title_font = QFont()
         title_font.setPointSize(16)
         title_font.setBold(True)
         title.setFont(title_font)
-        title.setAlignment(Qt.AlignCenter)
-        main_layout.addWidget(title)
+        title.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+
+        header_layout = QHBoxLayout()
+        header_layout.addWidget(title)
+        header_layout.addStretch()
+
+        main_layout.addLayout(header_layout)
         
         # Create splitter for resizable sections
         splitter = QSplitter(Qt.Vertical)
@@ -107,8 +192,8 @@ class MainWindow(QMainWindow):
         
         # Recording control panel
         self.recording_control = RecordingControlWidget(self.ros2_manager, self.async_ros2)
-        self.recording_control.recording_started.connect(self.on_recording_started)
-        self.recording_control.recording_stopped.connect(self.on_recording_stopped)
+        self.recording_control.recording_started.connect(self.on_recording_started)  # type: ignore[arg-type]
+        self.recording_control.recording_stopped.connect(self.on_recording_stopped)  # type: ignore[arg-type]
         top_layout.addWidget(self.recording_control)
         
         # Metrics display
@@ -120,34 +205,45 @@ class MainWindow(QMainWindow):
         # Middle section: Tabbed interface for different features
         self.tabs = QTabWidget()
         
-        # Tab 1: Topic Monitor
+        # Tab 1: Topic Monitor (with scroll area)
         self.topic_monitor = TopicMonitorWidget(self.ros2_manager, self.async_ros2)
-        self.tabs.addTab(self.topic_monitor, "📡 Topics")
+        topic_scroll = QScrollArea()
+        topic_scroll.setWidget(self.topic_monitor)
+        topic_scroll.setWidgetResizable(True)
+        self.tabs.addTab(topic_scroll, "📡 Topics")
         
         # Connect topic selection changes to recording control
         self.topic_monitor.topics_changed.connect(self.recording_control.update_selected_topics)
         
-        # Tab 2: Node Monitor
+        # Tab 2: Node Monitor (with scroll area)
         self.node_monitor = NodeMonitorWidget(self.ros2_manager, self.async_ros2)
-        self.tabs.addTab(self.node_monitor, "🔧 Nodes")
+        node_scroll = QScrollArea()
+        node_scroll.setWidget(self.node_monitor)
+        node_scroll.setWidgetResizable(True)
+        self.tabs.addTab(node_scroll, "🔧 Nodes")
         
-        # Tab 3: Service Monitor
+        # Tab 3: Service Monitor (with scroll area)
         self.service_monitor = ServiceMonitorWidget(self.ros2_manager, self.async_ros2)
-        self.tabs.addTab(self.service_monitor, "⚙️ Services")
+        service_scroll = QScrollArea()
+        service_scroll.setWidget(self.service_monitor)
+        service_scroll.setWidgetResizable(True)
+        self.tabs.addTab(service_scroll, "⚙️ Services")
         
-        # Tab 4: Topic Echo
+        # Tab 4: Topic Echo (with scroll area)
         self.topic_echo = TopicEchoWidget(self.ros2_manager)
-        self.tabs.addTab(self.topic_echo, "👁️ Topic Echo")
+        echo_scroll = QScrollArea()
+        echo_scroll.setWidget(self.topic_echo)
+        echo_scroll.setWidgetResizable(True)
+        self.tabs.addTab(echo_scroll, "👁️ Topic Echo")
         
-        # Tab 5: Bag Playback
-        self.bag_playback = BagPlaybackWidget(self.ros2_manager)
-        self.tabs.addTab(self.bag_playback, "▶️ Playback")
-        
-        # Tab 6: Advanced Stats
+        # Tab 5: Advanced Stats (with scroll area)
         self.advanced_stats = AdvancedStatsWidget(self.ros2_manager)
-        self.tabs.addTab(self.advanced_stats, "📊 Stats")
+        stats_scroll = QScrollArea()
+        stats_scroll.setWidget(self.advanced_stats)
+        stats_scroll.setWidgetResizable(True)
+        self.tabs.addTab(stats_scroll, "📊 Stats")
         
-        # Tab 7: Live Charts (NEW - Real-time visualization with adaptive performance) ⭐
+        # Tab 6: Live Charts (with scroll area)
         self.live_charts = LiveChartsWidget(
             self.metrics_collector, 
             self.ros2_manager,
@@ -155,32 +251,46 @@ class MainWindow(QMainWindow):
             update_interval=self.perf_settings['chart_update_interval'],
             auto_pause=self.perf_settings['chart_auto_pause']
         )
-        self.tabs.addTab(self.live_charts, "📈 Live Charts")
+        charts_scroll = QScrollArea()
+        charts_scroll.setWidget(self.live_charts)
+        charts_scroll.setWidgetResizable(True)
+        self.tabs.addTab(charts_scroll, "📈 Live Charts")
         
-        # Tab 8: Network Robots (NEW - Discover robots on network) ⭐
+        # Tab 7: Network Robots (with scroll area)
         self.network_robots = NetworkRobotsWidget()
         self.network_robots.robot_selected.connect(self.on_robot_selected)
-        self.tabs.addTab(self.network_robots, "🤖 Network Robots")
+        robots_scroll = QScrollArea()
+        robots_scroll.setWidget(self.network_robots)
+        robots_scroll.setWidgetResizable(True)
+        self.tabs.addTab(robots_scroll, "🤖 Network Robots")
         
-        # Tab 9: Templates (Recording templates) ⭐
+        # Tab 8: Templates (with scroll area)
         self.templates = RecordingTemplatesWidget(self.recording_control, self.topic_monitor)
-        self.tabs.addTab(self.templates, "📋 Templates")
+        templates_scroll = QScrollArea()
+        templates_scroll.setWidget(self.templates)
+        templates_scroll.setWidgetResizable(True)
+        self.tabs.addTab(templates_scroll, "📋 Templates")
         
-        # Tab 10: Network Upload (will be initialized later)
-        # Create a placeholder network manager for now
+        # Tab 9: Network Upload (with scroll area)
         from core.network_manager import NetworkManager
         placeholder_network_manager = NetworkManager()
         self.network_upload = NetworkUploadWidget(placeholder_network_manager)
-        self.tabs.addTab(self.network_upload, "☁️ Upload")
+        upload_scroll = QScrollArea()
+        upload_scroll.setWidget(self.network_upload)
+        upload_scroll.setWidgetResizable(True)
+        self.tabs.addTab(upload_scroll, "☁️ Upload")
+        
+        # Tab 10: Recording History (with scroll area) - MOVED FROM BOTTOM SPLITTER
+        self.recording_history = self.create_recording_history()
+        history_scroll = QScrollArea()
+        history_scroll.setWidget(self.recording_history)
+        history_scroll.setWidgetResizable(True)
+        self.tabs.addTab(history_scroll, "📁 History")
         
         splitter.addWidget(self.tabs)
         
-        # Bottom section: Recording history and file info
-        self.recording_history = self.create_recording_history()
-        splitter.addWidget(self.recording_history)
-        
-        # Set splitter sizes
-        splitter.setSizes([300, 400, 200])
+        # Set splitter sizes - now only 2 sections (top + tabs, no bottom history)
+        splitter.setSizes([300, 700])
         
         main_layout.addWidget(splitter)
         
@@ -198,37 +308,44 @@ class MainWindow(QMainWindow):
     def setup_menu_bar(self):
         """Setup application menu bar"""
         menubar = self.menuBar()
+        if not menubar:
+            return
         
         # View menu
         view_menu = menubar.addMenu("&View")
         
-        theme_action = view_menu.addAction("Toggle &Theme")
+        theme_action = QAction("Toggle &Theme", self)
         theme_action.setShortcut("Ctrl+T")
         theme_action.triggered.connect(self.toggle_theme)
+        view_menu.addAction(theme_action)  # type: ignore[union-attr]
         
-        view_menu.addSeparator()
+        view_menu.addSeparator()  # type: ignore[union-attr]
         
-        charts_action = view_menu.addAction("&Live Charts")
+        charts_action = QAction("&Live Charts", self)
         charts_action.setShortcut("Ctrl+L")
         charts_action.triggered.connect(lambda: self.tabs.setCurrentIndex(6))
+        view_menu.addAction(charts_action)  # type: ignore[union-attr]
         
         # Settings menu
         settings_menu = menubar.addMenu("&Settings")
         
-        perf_action = settings_menu.addAction("&Performance Mode...")
+        perf_action = QAction("&Performance Mode...", self)
         perf_action.triggered.connect(self.show_performance_settings)
+        settings_menu.addAction(perf_action)  # type: ignore[union-attr]
         
         # Help menu
         help_menu = menubar.addMenu("&Help")
         
-        shortcuts_action = help_menu.addAction("&Keyboard Shortcuts")
+        shortcuts_action = QAction("&Keyboard Shortcuts", self)
         shortcuts_action.setShortcut("Ctrl+H")
         shortcuts_action.triggered.connect(self.show_keyboard_shortcuts_help)
+        help_menu.addAction(shortcuts_action)  # type: ignore[union-attr]
         
-        help_menu.addSeparator()
+        help_menu.addSeparator()  # type: ignore[union-attr]
         
-        about_action = help_menu.addAction("&About")
+        about_action = QAction("&About", self)
         about_action.triggered.connect(self.show_about_dialog)
+        help_menu.addAction(about_action)  # type: ignore[union-attr]
         
     def show_about_dialog(self):
         """Show about dialog"""
@@ -279,12 +396,7 @@ class MainWindow(QMainWindow):
         from PyQt5.QtWidgets import QApplication
         theme = self.theme_manager.toggle_theme(QApplication.instance())
         self.update_status(f"🎨 Theme switched to: {theme.title()}")
-        
-    def set_initial_theme(self):
-        """Set initial theme on startup"""
-        from PyQt5.QtWidgets import QApplication
-        self.theme_manager.set_theme(QApplication.instance(), 'light')
-    
+
     def show_performance_settings(self):
         """Show performance settings dialog"""
         dialog = PerformanceSettingsDialog(self.performance_manager, self)
@@ -407,17 +519,30 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Keyboard Shortcuts", help_text)
         
     def create_recording_history(self):
-        """Create recording history widget"""
+        """Create recording history widget - OPTIMIZED FOR SMOOTH SCROLLING"""
         group = QGroupBox("Recording History & File Information")
         layout = QVBoxLayout()
         
-        # Table for recordings
+        # Table for recordings - OPTIMIZED FOR PERFORMANCE
         self.history_table = QTableWidget()
         self.history_table.setColumnCount(6)
         self.history_table.setHorizontalHeaderLabels([
             "Filename", "Size (MB)", "Duration", "Topics", "Start Time", "Status"
         ])
-        self.history_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        
+        # CRITICAL PERFORMANCE: Disable sorting and optimize rendering
+        self.history_table.setSortingEnabled(False)
+        
+        vheader = self.history_table.verticalHeader()
+        if vheader is not None:
+            vheader.setDefaultSectionSize(25)
+        
+        self.history_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.history_table.setSelectionMode(QTableWidget.SingleSelection)
+        
+        header = self.history_table.horizontalHeader()
+        if header is not None:
+            header.setSectionResizeMode(QHeaderView.Stretch)
         
         layout.addWidget(self.history_table)
         
@@ -438,26 +563,29 @@ class MainWindow(QMainWindow):
         return group
         
     def setup_timers(self):
-        """Setup update timers - AGGRESSIVE intervals to reduce lag"""
+        """Setup update timers - DELAYED START to prevent startup freezes"""
         perf = self.perf_settings
         
-        # ROS2 info timer - INCREASED interval (less frequent)
+        # ROS2 info timer - ULTRA SLOW interval (10 seconds) to prevent topic tab freezes
+        # Topics tab was causing freezes from excessive checkbox recreation
         self.ros2_timer = QTimer()
         self.ros2_timer.timeout.connect(self.update_ros2_info_async)
-        # Use slower updates - 3+ seconds between calls
-        self.ros2_timer.start(max(3000, perf.get('ros2_update_interval', 3000)))
+        # DON'T START YET - delay 3 seconds to let UI load first
+        QTimer.singleShot(3000, lambda: self.ros2_timer.start(10000))  # Changed from 5s to 10s
         
-        # Metrics timer - INCREASED interval
+        # Metrics timer - VERY SLOW interval (5 seconds)
+        # Metrics collection is async and non-blocking
         self.metrics_timer = QTimer()
         self.metrics_timer.timeout.connect(self.update_metrics)
-        # Use slower updates - 1 second between calls
-        self.metrics_timer.start(max(1000, perf.get('metrics_update_interval', 1000)))
+        # Delay 5 seconds after startup
+        QTimer.singleShot(5000, lambda: self.metrics_timer.start(5000))
         
-        # Recording history timer - INCREASED interval
+        # Recording history timer - VERY SLOW interval (30 seconds)
+        # History is low priority and doesn't need frequent updates
         self.history_timer = QTimer()
         self.history_timer.timeout.connect(self.refresh_recording_history)
-        # Update every 5 seconds instead of 2
-        self.history_timer.start(max(5000, perf.get('history_update_interval', 5000)))
+        # Delay 10 seconds after startup
+        QTimer.singleShot(10000, lambda: self.history_timer.start(30000))
         
         # Connect to performance mode changes
         self.performance_manager.mode_changed.connect(self.on_performance_mode_changed)
@@ -469,24 +597,33 @@ class MainWindow(QMainWindow):
         
         # Create tray icon
         self.tray_icon = QSystemTrayIcon(self)
-        self.tray_icon.setIcon(self.style().standardIcon(self.style().SP_ComputerIcon))
+        try:
+            from PyQt5.QtWidgets import QStyle
+            style = self.style()
+            if style is not None:
+                self.tray_icon.setIcon(style.standardIcon(QStyle.SP_ComputerIcon))
+        except Exception:
+            pass
         self.tray_icon.setToolTip("ROS2 Dashboard")
         
         # Create tray menu
         tray_menu = QMenu()
         
-        show_action = tray_menu.addAction("Show Dashboard")
-        show_action.triggered.connect(self.show)
+        show_action = QAction("Show Dashboard", self)
+        show_action.triggered.connect(lambda: self.show())
+        tray_menu.addAction(show_action)
         
         tray_menu.addSeparator()
         
-        record_action = tray_menu.addAction("Start Recording")
+        record_action = QAction("Start Recording", self)
         record_action.triggered.connect(self.toggle_recording)
+        tray_menu.addAction(record_action)
         
         tray_menu.addSeparator()
         
-        quit_action = tray_menu.addAction("Exit")
-        quit_action.triggered.connect(self.close)
+        quit_action = QAction("Exit", self)
+        quit_action.triggered.connect(self._close_window)  # type: ignore[arg-type]
+        tray_menu.addAction(quit_action)
         
         self.tray_icon.setContextMenu(tray_menu)
         self.tray_icon.show()
@@ -499,12 +636,36 @@ class MainWindow(QMainWindow):
         if reason == QSystemTrayIcon.DoubleClick:
             self.show()
             self.activateWindow()
+
+    @pyqtSlot()
+    def _close_window(self) -> None:
+        """Close window wrapper that returns None for signal-slot typing."""
+        self.close()
     
     def show_notification(self, title: str, message: str, icon=QSystemTrayIcon.Information):
         """Show desktop notification."""
         if hasattr(self, 'tray_icon') and self.tray_icon.supportsMessages():
             self.tray_icon.showMessage(title, message, icon, 3000)  # 3 second duration
         
+    def _warmup_cache(self):
+        """Warm up async cache in background - prevents first-call freezes"""
+        print("🔥 Warming up cache in background...")
+        
+        # Trigger async cache population (non-blocking)
+        # These will populate the cache so future UI updates are instant
+        def _noop(data):
+            print(f"✅ Cache warmed: {len(data) if isinstance(data, list) else 'data'} items")
+        
+        try:
+            if self.async_ros2:
+                # Queue async operations without blocking
+                self.async_ros2.get_topics_async(_noop)
+                # Stagger the calls to avoid overwhelming system
+                QTimer.singleShot(500, lambda: self.async_ros2.get_nodes_async(_noop) if self.async_ros2 else None)
+                QTimer.singleShot(1000, lambda: self.async_ros2.get_services_async(_noop) if self.async_ros2 else None)
+        except Exception as e:
+            print(f"⚠️ Cache warmup error: {e}")
+            
     def init_network_manager(self):
         """Initialize network manager after UI is ready"""
         try:
@@ -515,15 +676,20 @@ class MainWindow(QMainWindow):
             if hasattr(self, 'network_upload'):
                 self.network_upload.network_manager = self.network_manager
                 
-            print("Network Manager initialized")
+            print("✅ Network Manager initialized")
         except Exception as e:
             print(f"Warning: Could not initialize Network Manager: {e}")
             self.network_manager = None
             
     def update_ros2_info_async(self):
         """
-        LAZY TAB LOADING - Only update the currently visible tab
-        This dramatically reduces CPU usage and improves FPS
+        ULTRA-OPTIMIZED LAZY TAB LOADING with smart debouncing
+        
+        Changes:
+        - Only update the currently visible tab (reduces CPU 40-50%)
+        - Use debounced refresh methods on each monitor widget
+        - Prevents non-visible tabs from consuming resources
+        - Smart deduplication at async manager level prevents concurrent requests
         """
         import time
         
@@ -546,11 +712,12 @@ class MainWindow(QMainWindow):
         # LAZY TAB LOADING: Update ONLY the active tab (40-50% CPU reduction)
         # This prevents non-visible tabs from consuming resources
         if current_tab == 0:  # Topics tab
-            self.async_ros2.get_topics_async(self.topic_monitor.update_topics_data)
+            # Use debounced refresh that prevents concurrent updates AND deduplicates requests
+            self.topic_monitor.refresh_topics()
         elif current_tab == 1:  # Nodes tab
-            self.async_ros2.get_nodes_async(self.node_monitor.update_nodes_data)
+            self.node_monitor.refresh_nodes()
         elif current_tab == 2:  # Services tab
-            self.async_ros2.get_services_async(self.service_monitor.update_services_data)
+            self.service_monitor.refresh_services()
         # Tabs 3-9 don't need frequent ROS2 updates (they update on demand)
         
     def update_metrics(self):
@@ -563,16 +730,28 @@ class MainWindow(QMainWindow):
             return
         self._last_metrics_update = current_time
         
-        if self.is_recording:
-            # During recording: full metrics update
-            self.metrics_collector.update(self.ros2_manager)
-        else:
-            # When not recording: update live metrics (system stats + topic count)
-            # This uses cached values for performance
-            live_metrics = self.metrics_collector.get_live_metrics(self.ros2_manager)
-        
-        # Always update the display
-        self.metrics_display.update_display()
+        if self._metrics_task_running:
+            return
+
+        worker = MetricsWorker(self.metrics_collector, self.ros2_manager, self.is_recording)
+        worker.signals.finished.connect(self._handle_metrics_finished)  # type: ignore[arg-type]
+        worker.signals.error.connect(self._handle_metrics_error)  # type: ignore[arg-type]
+        self._metrics_task_running = True
+        self.metrics_thread_pool.start(worker)
+
+        # The heavy lifting happens in the worker thread; nothing else to do here.
+
+    @pyqtSlot(dict)
+    def _handle_metrics_finished(self, metrics):
+        """Receive metrics from worker thread and refresh UI."""
+        self._metrics_task_running = False
+        self.metrics_display.update_display(metrics)
+
+    @pyqtSlot(str)
+    def _handle_metrics_error(self, message: str):
+        """Log metrics worker errors without crashing the UI."""
+        self._metrics_task_running = False
+        print(f"Metrics worker error: {message}")  # pragma: no cover - debug aid
     
     def on_robot_selected(self, hostname: str, topics: list):
         """Handle robot selection from network discovery - seamless workflow"""
@@ -647,8 +826,8 @@ class MainWindow(QMainWindow):
         self.metrics_collector.reset()
         self.update_status("Recording in progress...")
         
-        # Speed up metrics timer during recording
-        self.metrics_timer.setInterval(self.perf_settings['metrics_update_interval'])
+        # Timers are already set to very infrequent (5-30 seconds)
+        # No need to pause or modify them - they won't cause freezing
         
         # Show notification
         self.show_notification("Recording Started", "ROS2 bag recording in progress")
@@ -659,10 +838,8 @@ class MainWindow(QMainWindow):
         self.is_recording = False
         self.update_status("Recording stopped")
         
-        # Slow down metrics timer when not recording (save CPU, still show live topics)
-        # Use 2x the normal interval when idle
-        idle_interval = self.perf_settings['metrics_update_interval'] * 2
-        self.metrics_timer.setInterval(idle_interval)
+        # Timers stay at their slow intervals (5-30 seconds) - no changes needed
+        # They were already set to prevent freezing
         
         self.refresh_recording_history()
         
@@ -675,9 +852,9 @@ class MainWindow(QMainWindow):
             if hasattr(self.network_upload, 'auto_upload') and self.network_upload.auto_upload:
                 # Get the recording path
                 if hasattr(self.recording_control, 'current_bag_name'):
-                    bag_name = self.recording_control.current_bag_name
-                    output_dir = self.recording_control.dir_input.text()
-                    bag_path = os.path.join(output_dir, bag_name)
+                    bag_name = getattr(self.recording_control, 'current_bag_name', None)
+                    output_dir = self.recording_control.dir_input.text() if hasattr(self.recording_control, 'dir_input') else None
+                    bag_path = os.path.join(output_dir, bag_name) if output_dir and bag_name else None
                     
                     # Include robot metadata in upload
                     metadata = {}
@@ -700,7 +877,8 @@ class MainWindow(QMainWindow):
                             self.network_upload.tags_input.setText(tags)
                         
                         # Queue the upload (network_upload will handle it)
-                        QTimer.singleShot(1000, lambda: self.network_upload.upload_directory(bag_path))
+                        if bag_path:
+                            QTimer.singleShot(1000, lambda: self.network_upload.upload_directory(bag_path))
                     except Exception as e:
                         print(f"Auto-upload error: {e}")
         
@@ -726,56 +904,64 @@ class MainWindow(QMainWindow):
                 self.network_upload.add_recording_upload(bag_path, metadata)
         
     def refresh_recording_history(self):
-        """Refresh the recording history table"""
-        recordings_dir = self.ros2_manager.get_recordings_directory()
-        if not os.path.exists(recordings_dir):
+        """Schedule background refresh of recording history (non-blocking)."""
+        if self._history_task_running:
             return
-            
-        # Get all bag files
-        bag_files = []
-        for root, dirs, files in os.walk(recordings_dir):
-            if 'metadata.yaml' in files:
-                bag_files.append(root)
-                
-        # Update table
-        self.history_table.setRowCount(len(bag_files))
-        
-        for idx, bag_path in enumerate(sorted(bag_files, reverse=True)):
-            # Get bag info
-            bag_info = self.ros2_manager.get_bag_info(bag_path)
-            
-            # Filename
-            filename_item = QTableWidgetItem(os.path.basename(bag_path))
-            self.history_table.setItem(idx, 0, filename_item)
-            
-            # Size
-            size_mb = bag_info.get('size_mb', 0)
-            size_item = QTableWidgetItem(f"{size_mb:.2f}")
-            size_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            self.history_table.setItem(idx, 1, size_item)
-            
-            # Duration
-            duration = bag_info.get('duration', '0s')
-            self.history_table.setItem(idx, 2, QTableWidgetItem(duration))
-            
-            # Topics
-            topic_count = bag_info.get('topic_count', 0)
-            topics_item = QTableWidgetItem(str(topic_count))
-            topics_item.setTextAlignment(Qt.AlignCenter)
-            self.history_table.setItem(idx, 3, topics_item)
-            
-            # Start time
-            start_time = bag_info.get('start_time', 'Unknown')
-            self.history_table.setItem(idx, 4, QTableWidgetItem(start_time))
-            
-            # Status
-            status = "Complete" if bag_info.get('is_complete', True) else "Incomplete"
-            status_item = QTableWidgetItem(status)
-            if status == "Complete":
-                status_item.setForeground(QColor('green'))
-            else:
-                status_item.setForeground(QColor('orange'))
-            self.history_table.setItem(idx, 5, status_item)
+
+        worker = HistoryWorker(self.ros2_manager)
+        worker.signals.finished.connect(self._handle_history_finished)  # type: ignore[arg-type]
+        worker.signals.error.connect(self._handle_history_error)  # type: ignore[arg-type]
+        self._history_task_running = True
+        self.history_thread_pool.start(worker)
+
+    @pyqtSlot(list)
+    def _handle_history_finished(self, rows):
+        """Populate the history table with precomputed rows from worker."""
+        try:
+            self.history_table.setRowCount(len(rows))
+            for idx, row in enumerate(rows):
+                bag_path = row['path']
+                bag_info = row['info'] or {}
+
+                # Filename
+                filename_item = QTableWidgetItem(os.path.basename(bag_path))
+                self.history_table.setItem(idx, 0, filename_item)
+
+                # Size
+                size_mb = bag_info.get('size_mb', 0) or 0
+                size_item = QTableWidgetItem(f"{size_mb:.2f}")
+                size_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.history_table.setItem(idx, 1, size_item)
+
+                # Duration
+                duration = bag_info.get('duration', '0s')
+                self.history_table.setItem(idx, 2, QTableWidgetItem(duration))
+
+                # Topics
+                topic_count = bag_info.get('topic_count', 0) or 0
+                topics_item = QTableWidgetItem(str(topic_count))
+                topics_item.setTextAlignment(Qt.AlignCenter)
+                self.history_table.setItem(idx, 3, topics_item)
+
+                # Start time
+                start_time = bag_info.get('start_time', 'Unknown')
+                self.history_table.setItem(idx, 4, QTableWidgetItem(start_time))
+
+                # Status
+                status = "Complete" if bag_info.get('is_complete', True) else "Incomplete"
+                status_item = QTableWidgetItem(status)
+                if status == "Complete":
+                    status_item.setForeground(QColor('green'))
+                else:
+                    status_item.setForeground(QColor('orange'))
+                self.history_table.setItem(idx, 5, status_item)
+        finally:
+            self._history_task_running = False
+
+    @pyqtSlot(str)
+    def _handle_history_error(self, message: str):
+        self._history_task_running = False
+        print(f"History worker error: {message}")  # pragma: no cover
             
     def open_recordings_folder(self):
         """Open the recordings folder in file manager"""

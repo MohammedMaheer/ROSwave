@@ -69,30 +69,50 @@ class ROS2Manager:
         topics = []
         
         try:
-            # SKIP ros2 check - assume it's in PATH
-            # Check if ros2 command exists
+            # Get list of topics with reasonable timeout (2 seconds for the list command)
             result = subprocess.run(
                 ['ros2', 'topic', 'list'],
                 capture_output=True,
                 text=True,
-                timeout=1.0  # AGGRESSIVE TIMEOUT - 1 second only
+                timeout=2.0  # Increased timeout - list can take time on first call
             )
             
             if result.returncode == 0:
                 topic_names = [t.strip() for t in result.stdout.strip().split('\n') if t.strip()]
                 
-                # Get info for all topics in parallel
+                # Get info for all topics - use ThreadPoolExecutor to fetch types in parallel
                 topics = []
-                for t in topic_names:
-                    msg_type = self._get_topic_type(t)
-                    hz = self._get_topic_hz_fast(t)  # Get publishing rate with 200ms timeout
-                    pub_count = 1 if msg_type != "Unknown" else 0  # If we got type, assume publishing
-                    topics.append({
-                        'name': t, 
-                        'type': msg_type, 
-                        'publisher_count': pub_count, 
-                        'hz': hz
-                    })
+                
+                # Fetch types in parallel with reduced timeout per topic
+                if topic_names:
+                    # Use thread pool to get types concurrently
+                    from concurrent.futures import ThreadPoolExecutor, as_completed
+                    
+                    with ThreadPoolExecutor(max_workers=4) as executor:
+                        # Submit all type fetches
+                        future_to_topic = {
+                            executor.submit(self._get_topic_type, t): t 
+                            for t in topic_names
+                        }
+                        
+                        # Collect results as they complete
+                        topic_types = {}
+                        for future in as_completed(future_to_topic, timeout=3.0):
+                            topic_name = future_to_topic[future]
+                            try:
+                                msg_type = future.result()
+                                topic_types[topic_name] = msg_type
+                            except Exception:
+                                topic_types[topic_name] = "Unknown"
+                    
+                    # Build topic list with types
+                    for t in topic_names:
+                        topics.append({
+                            'name': t, 
+                            'type': topic_types.get(t, "Unknown"),
+                            'publisher_count': 1,  # Assume publishing if in list
+                            'hz': 0.0  # Hz will be 0 (too slow to fetch for all)
+                        })
                 
                 # CACHE immediately
                 with self._cache_lock:
@@ -100,6 +120,7 @@ class ROS2Manager:
                     self._cache_timestamps[cache_key] = time.time()
                     
         except subprocess.TimeoutExpired:
+            print("⚠️ ROS2 topic list timeout - returning cached data")
             # Return last known good value instead of empty
             with self._cache_lock:
                 return self._cache.get(cache_key, [])
@@ -109,19 +130,23 @@ class ROS2Manager:
         return topics
         
     def _get_topic_type(self, topic_name):
-        """Get the message type for a topic"""
+        """Get the message type for a topic - with timeout"""
         try:
             result = subprocess.run(
                 ['ros2', 'topic', 'type', topic_name],
                 capture_output=True,
                 text=True,
-                timeout=1
+                timeout=0.8  # 800ms timeout per topic
             )
             
             if result.returncode == 0:
-                return result.stdout.strip()
-        except:
-            pass
+                msg_type = result.stdout.strip()
+                if msg_type:
+                    return msg_type
+        except subprocess.TimeoutExpired:
+            print(f"⚠️ Timeout getting type for {topic_name}")
+        except Exception as e:
+            print(f"Error getting type for {topic_name}: {e}")
             
         return "Unknown"
         
@@ -153,12 +178,12 @@ class ROS2Manager:
     def _get_topic_hz_fast(self, topic_name):
         """Get the publishing frequency of a topic FAST with short timeout"""
         try:
-            # Use ros2 topic hz with 200ms timeout (gives quick estimate)
+            # Use ros2 topic hz with 100ms timeout (ultra fast, just 1 message)
             result = subprocess.run(
                 ['ros2', 'topic', 'hz', topic_name],
                 capture_output=True,
                 text=True,
-                timeout=0.2  # Very short timeout - just get 1-2 messages
+                timeout=0.1  # ULTRA short timeout - just get 1 message
             )
             
             # Parse the output - look for the last "average:" line
@@ -343,18 +368,18 @@ class ROS2Manager:
         nodes = []
         
         try:
-            # Get list of nodes with AGGRESSIVE timeout
+            # Get list of nodes with reasonable timeout
             result = subprocess.run(
                 ['ros2', 'node', 'list'],
                 capture_output=True,
                 text=True,
-                timeout=1.0  # 1 SECOND TIMEOUT
+                timeout=2.0  # Increased timeout for first call
             )
             
             if result.returncode == 0:
                 node_names = [n.strip() for n in result.stdout.strip().split('\n') if n.strip()]
                 
-                # SKIP subprocess calls - just parse names
+                # SKIP subprocess calls - just parse names (don't call node info for each)
                 nodes = []
                 for node_name in node_names:
                     parts = node_name.rsplit('/', 1)
@@ -365,8 +390,8 @@ class ROS2Manager:
                         'name': name,
                         'full_name': node_name,
                         'namespace': namespace,
-                        'publishers': 0,  # SKIP - too slow
-                        'subscribers': 0  # SKIP - too slow
+                        'publishers': 0,  # SKIP - too slow to fetch
+                        'subscribers': 0   # SKIP - too slow to fetch
                     })
                 
                 # CACHE immediately
@@ -375,6 +400,7 @@ class ROS2Manager:
                     self._cache_timestamps[cache_key] = time.time()
                     
         except subprocess.TimeoutExpired:
+            print("⚠️ ROS2 node list timeout - returning cached data")
             # Return cached value
             with self._cache_lock:
                 return self._cache.get(cache_key, [])
@@ -450,18 +476,18 @@ class ROS2Manager:
         services = []
         
         try:
-            # Get list of services with AGGRESSIVE timeout
+            # Get list of services with reasonable timeout
             result = subprocess.run(
                 ['ros2', 'service', 'list'],
                 capture_output=True,
                 text=True,
-                timeout=1.0  # 1 SECOND TIMEOUT
+                timeout=2.0  # Increased timeout for first call
             )
             
             if result.returncode == 0:
                 service_names = [s.strip() for s in result.stdout.strip().split('\n') if s.strip()]
                 
-                # SKIP type lookup - too slow
+                # SKIP type lookup - too slow, just list service names
                 services = [{'name': s, 'type': 'Unknown', 'server_count': 1} 
                            for s in service_names]
                 
@@ -471,6 +497,7 @@ class ROS2Manager:
                     self._cache_timestamps[cache_key] = time.time()
                     
         except subprocess.TimeoutExpired:
+            print("⚠️ ROS2 service list timeout - returning cached data")
             # Return cached value
             with self._cache_lock:
                 return self._cache.get(cache_key, [])

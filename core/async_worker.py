@@ -62,17 +62,21 @@ class ROS2Worker(QRunnable):
 
 class AsyncROS2Manager:
     """
-    Async wrapper for ROS2Manager with AGGRESSIVE caching.
+    Async wrapper for ROS2Manager with ULTRA-AGGRESSIVE caching and optimization.
     
     Uses QThreadPool for GUI integration + ThreadPoolExecutor for pure async work.
-    OPTIMIZED: Maximum cache reuse to minimize subprocess calls.
+    OPTIMIZATIONS:
+    - Aggressive result caching (5+ seconds)
+    - Smart deduplication (prevents duplicate async calls)
+    - Priority-based thread management
+    - Immediate cache returns (zero-latency for cached data)
     """
     
     def __init__(self, ros2_manager, max_threads=2, cache_timeout=5.0):
         self.ros2_manager = ros2_manager
         self.threadpool = QThreadPool()
         
-        # AGGRESSIVE thread management - fewer threads
+        # AGGRESSIVE thread management - fewer threads for stability
         self.max_threads = max_threads
         self.cache_timeout = cache_timeout
         self.threadpool.setMaxThreadCount(max_threads)
@@ -80,18 +84,33 @@ class AsyncROS2Manager:
         # Additional ThreadPoolExecutor for pure async operations
         self.executor = ThreadPoolExecutor(max_workers=max_threads)
         
-        # AGGRESSIVE result cache - 5+ seconds
+        # ULTRA-AGGRESSIVE result cache - 5+ seconds
         self._cache = {}
         self._cache_timeout = cache_timeout
         self._cache_timestamps = {}
         self._lock = threading.Lock()
         
+        # DEDUPLICATION: Track pending requests to prevent duplicate fetches
+        self._pending_requests = {}
+        self._pending_callbacks = {}
+        
     def get_topics_async(self, callback):
-        """Get topics info asynchronously with AGGRESSIVE caching"""
+        """Get topics info asynchronously with ULTRA-AGGRESSIVE caching"""
+        # INSTANT return if cached (0ms overhead)
         if self._is_cached('topics'):
             with self._lock:
-                callback(self._cache.get('topics', []))
+                cached_data = self._cache.get('topics', [])
+            # Call immediately on main thread (Qt will deliver to callback)
+            callback(cached_data)
             return
+        
+        # DEDUPLICATION: If already fetching, just queue callback
+        if 'topics' in self._pending_requests:
+            self._pending_callbacks.setdefault('topics', []).append(callback)
+            return
+        
+        # Mark as pending
+        self._pending_requests['topics'] = True
         
         def _wrapper(**kwargs):
             result = self.ros2_manager.get_topics_info()
@@ -100,17 +119,36 @@ class AsyncROS2Manager:
                 self._cache_timestamps['topics'] = __import__('time').time()
             return result
         
+        def _on_result(result):
+            callback(result)
+            # Call all other queued callbacks
+            for cb in self._pending_callbacks.get('topics', []):
+                cb(result)
+            # Clean up
+            with self._lock:
+                self._pending_requests.pop('topics', None)
+                self._pending_callbacks.pop('topics', None)
+        
         worker = ROS2Worker(_wrapper)
-        worker.signals.result.connect(callback)
+        worker.signals.result.connect(_on_result)
         worker.signals.error.connect(self._handle_error)
         self.threadpool.start(worker)
         
     def get_nodes_async(self, callback):
-        """Get nodes info asynchronously with AGGRESSIVE caching"""
+        """Get nodes info asynchronously with ULTRA-AGGRESSIVE caching"""
+        # INSTANT return if cached
         if self._is_cached('nodes'):
             with self._lock:
-                callback(self._cache.get('nodes', []))
+                cached_data = self._cache.get('nodes', [])
+            callback(cached_data)
             return
+        
+        # DEDUPLICATION
+        if 'nodes' in self._pending_requests:
+            self._pending_callbacks.setdefault('nodes', []).append(callback)
+            return
+        
+        self._pending_requests['nodes'] = True
         
         def _wrapper(**kwargs):
             result = self.ros2_manager.get_nodes_info()
@@ -119,17 +157,34 @@ class AsyncROS2Manager:
                 self._cache_timestamps['nodes'] = __import__('time').time()
             return result
         
+        def _on_result(result):
+            callback(result)
+            for cb in self._pending_callbacks.get('nodes', []):
+                cb(result)
+            with self._lock:
+                self._pending_requests.pop('nodes', None)
+                self._pending_callbacks.pop('nodes', None)
+        
         worker = ROS2Worker(_wrapper)
-        worker.signals.result.connect(callback)
+        worker.signals.result.connect(_on_result)
         worker.signals.error.connect(self._handle_error)
         self.threadpool.start(worker)
         
     def get_services_async(self, callback):
-        """Get services info asynchronously with AGGRESSIVE caching"""
+        """Get services info asynchronously with ULTRA-AGGRESSIVE caching"""
+        # INSTANT return if cached
         if self._is_cached('services'):
             with self._lock:
-                callback(self._cache.get('services', []))
+                cached_data = self._cache.get('services', [])
+            callback(cached_data)
             return
+        
+        # DEDUPLICATION
+        if 'services' in self._pending_requests:
+            self._pending_callbacks.setdefault('services', []).append(callback)
+            return
+        
+        self._pending_requests['services'] = True
         
         def _wrapper(**kwargs):
             result = self.ros2_manager.get_services_info()
@@ -138,8 +193,16 @@ class AsyncROS2Manager:
                 self._cache_timestamps['services'] = __import__('time').time()
             return result
         
+        def _on_result(result):
+            callback(result)
+            for cb in self._pending_callbacks.get('services', []):
+                cb(result)
+            with self._lock:
+                self._pending_requests.pop('services', None)
+                self._pending_callbacks.pop('services', None)
+        
         worker = ROS2Worker(_wrapper)
-        worker.signals.result.connect(callback)
+        worker.signals.result.connect(_on_result)
         worker.signals.error.connect(self._handle_error)
         self.threadpool.start(worker)
         

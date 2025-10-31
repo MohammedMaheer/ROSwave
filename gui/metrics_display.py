@@ -2,6 +2,8 @@
 Metrics Display Widget - displays recording metrics and statistics
 """
 
+from typing import Dict, Optional, Union
+
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QGroupBox, QGridLayout, QProgressBar)
 from PyQt5.QtCore import Qt
@@ -118,9 +120,12 @@ class MetricsDisplayWidget(QWidget):
         layout.addWidget(group)
         self.setLayout(layout)
         
-    def update_display(self):
-        """Update the metrics display"""
-        metrics = self.metrics_collector.get_metrics()
+    def update_display(self, metrics: Optional[Dict[str, Union[int, float]]] = None):
+        """Update the metrics display with provided metrics or fetch fresh copy."""
+        if metrics is None:
+            metrics = self.metrics_collector.get_metrics()
+
+        metrics = dict(metrics or {})
         
         # Update duration
         duration = metrics.get('duration', 0)
