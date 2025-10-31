@@ -1,0 +1,4 @@
+{
+  "notes": "Topic and message type schema can be filled by ros2_manager.get_bag_info",
+  "topics": {}
+}

@@ -631,6 +631,13 @@ class MainWindow(QMainWindow):
         # Stagger startup: delay 5 seconds to let UI fully render first
         QTimer.singleShot(5000, lambda: self.ros2_timer.start(20000))  # 20 second interval
         
+        # CRITICAL: Fast metrics collection timer for live charts (NOT debounced)
+        # This runs at 500ms interval only during recording to feed live_charts data
+        # This is SEPARATE from the metrics display timer
+        self.live_metrics_timer = QTimer()
+        self.live_metrics_timer.timeout.connect(self._update_live_metrics_fast)
+        # Initially stopped, starts when recording begins
+        
         # Metrics timer - SLOWER interval (8 seconds, only if visible)
         # Metrics are lower priority than responsiveness
         self.metrics_timer = QTimer()
@@ -855,6 +862,28 @@ class MainWindow(QMainWindow):
         
         # Call the existing metrics update
         self.update_metrics()
+    
+    def _update_live_metrics_fast(self):
+        """
+        CRITICAL: Fast metrics collection ONLY for live charts (NOT debounced)
+        Runs at 500ms during recording to feed live_charts widget with fresh data
+        This is completely separate from metrics_display updates to avoid conflicts
+        """
+        if not self.is_recording:
+            return
+        
+        try:
+            # Simply update the metrics collector WITHOUT the worker thread
+            # Direct call is faster and doesn't block UI since metrics_collector is thread-safe
+            if self.ros2_manager:
+                self.metrics_collector.update(self.ros2_manager)
+                # DEBUG: Uncomment to see if this is being called
+                # metrics = self.metrics_collector.get_live_metrics(None)
+                # print(f"💾 Live metrics updated: {metrics.get('duration', 0):.2f}s, "
+                #       f"{metrics.get('message_rate', 0):.1f} msg/s")
+        except Exception as e:
+            # Silently fail - live charts will just use previous data
+            pass
             
     def update_ros2_info_async(self):
         """
@@ -1008,7 +1037,6 @@ class MainWindow(QMainWindow):
         # Skip if scroll pause is active
         if self._scroll_pause_active:
             return
-            return
 
         worker = MetricsWorker(self.metrics_collector, self.ros2_manager, self.is_recording)
         worker.signals.finished.connect(self._handle_metrics_finished)  # type: ignore[arg-type]
@@ -1103,6 +1131,11 @@ class MainWindow(QMainWindow):
         self.metrics_collector.reset()
         self.update_status("Recording in progress...")
         
+        # CRITICAL: Start fast live metrics timer for chart updates
+        # This ensures charts get fresh data at 500ms intervals without blocking UI
+        if not self.live_metrics_timer.isActive():
+            self.live_metrics_timer.start(500)  # 500ms = 2 Hz for smooth charts
+        
         # OPTIMIZATION: Increase timer intervals during recording to reduce CPU load
         # Recording process is I/O intensive, so we back off on UI updates
         # This prevents UI lag during heavy bag file writes
@@ -1125,6 +1158,11 @@ class MainWindow(QMainWindow):
     def on_recording_stopped(self):
         """Handle recording stopped event - restore normal timer frequencies"""
         self.is_recording = False
+        
+        # CRITICAL: Stop the fast live metrics timer when recording stops
+        if self.live_metrics_timer.isActive():
+            self.live_metrics_timer.stop()
+        
         self.update_status("Recording stopped")
         
         # OPTIMIZATION: Restore normal timer frequencies after recording

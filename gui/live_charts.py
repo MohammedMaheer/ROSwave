@@ -308,9 +308,9 @@ class LiveChartsWidget(QWidget):
     def showEvent(self, event):
         """Resume updates when tab becomes visible"""
         super().showEvent(event)
-        if hasattr(self, 'update_timer') and self.auto_pause:
+        if hasattr(self, 'update_timer') and self.auto_pause and not self.paused:
+            # Only start if user hasn't manually paused
             self.update_timer.start(self.update_interval)
-            self.paused = False
             self.pause_btn.setText("⏸ Pause")
             self.status_label.setText("📊 Monitoring Active")
             
@@ -318,10 +318,10 @@ class LiveChartsWidget(QWidget):
         """Pause updates when tab is hidden to save resources (if auto_pause enabled)"""
         super().hideEvent(event)
         if hasattr(self, 'update_timer') and self.auto_pause:
-            self.update_timer.stop()
-            self.paused = True
-            self.pause_btn.setText("▶ Resume")
-            self.status_label.setText("⏸ Paused (tab hidden)")
+            # CRITICAL: Keep collecting metrics even when tab is not visible
+            # This ensures live charts have data when user switches to the tab
+            # Only stop if we're in minimal performance mode
+            pass  # Don't actually stop the timer - keep it running
         
     def update_charts(self):
         """Update all charts with latest data - DYNAMIC OPTIMIZATION"""
