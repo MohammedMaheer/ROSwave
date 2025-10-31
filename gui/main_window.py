@@ -37,6 +37,25 @@ from core.performance_modes import PerformanceModeManager, PerformanceMode  # ty
 from gui.performance_settings_dialog import PerformanceSettingsDialog  # type: ignore
 
 
+class ScrollEventFilter(QObject):
+    """Event filter to detect scroll events and pause UI updates during scrolling"""
+    
+    def __init__(self, main_window):
+        super().__init__()
+        self.main_window = main_window
+    
+    def eventFilter(self, obj, event):
+        """Filter scroll events to pause updates"""
+        from PyQt5.QtGui import QWheelEvent
+        from PyQt5.QtCore import QEvent as QtEvent
+        
+        # Detect scroll wheel and scroll bar events
+        if event.type() in [QtEvent.Wheel, QtEvent.ScrollUpdate]:
+            self.main_window.pause_updates_for_scroll()
+        
+        return False  # Continue processing the event
+
+
 class MetricsWorkerSignals(QObject):
     """Signals used by the background metrics worker."""
 
@@ -146,6 +165,12 @@ class MainWindow(QMainWindow):
         self._ros2_update_cooldown = 1.0  # At least 1 second between updates
         self._last_metrics_update = 0
         self._metrics_update_cooldown = 0.5  # At least 0.5 seconds between metrics
+        
+        # SCROLL PAUSE - pause updates while user is scrolling
+        self._scroll_pause_active = False
+        self._scroll_pause_timer = QTimer()
+        self._scroll_pause_timer.timeout.connect(self._resume_updates)
+        self._scroll_pause_timer.setSingleShot(True)
         
         self.init_ui()
         self.setup_timers()
@@ -289,6 +314,16 @@ class MainWindow(QMainWindow):
         
         # Connect tab change signal for smooth transitions
         self.tabs.currentChanged.connect(self.on_tab_changed)
+        
+        # Install scroll event filter for smooth scrolling during updates
+        scroll_filter = ScrollEventFilter(self)
+        for i in range(self.tabs.count()):
+            tab_widget = self.tabs.widget(i)
+            if isinstance(tab_widget, QScrollArea):
+                tab_widget.installEventFilter(scroll_filter)
+                # Also filter the scroll bar events
+                if tab_widget.verticalScrollBar():
+                    tab_widget.verticalScrollBar().installEventFilter(scroll_filter)
         
         splitter.addWidget(self.tabs)
         
@@ -753,6 +788,44 @@ class MainWindow(QMainWindow):
         except Exception:
             pass  # Silent fail - tab switching should never freeze UI
         
+    def pause_updates_for_scroll(self):
+        """
+        Pause all UI updates while user is scrolling
+        Resumes automatically after scroll ends (300ms timeout)
+        """
+        if not self._scroll_pause_active:
+            self._scroll_pause_active = True
+            
+            # Pause the update timers to reduce UI work
+            if self.metrics_timer.isActive():
+                self.metrics_timer.stop()
+            if self.ros2_timer.isActive():
+                self.ros2_timer.stop()
+            if hasattr(self, 'live_charts') and hasattr(self.live_charts, 'update_timer'):
+                if self.live_charts.update_timer.isActive():
+                    self.live_charts.update_timer.stop()
+        
+        # Reset the resume timer (300ms after last scroll)
+        self._scroll_pause_timer.stop()
+        self._scroll_pause_timer.start(300)  # Resume after 300ms of no scrolling
+    
+    def _resume_updates(self):
+        """Resume all UI updates after scrolling ends"""
+        try:
+            self._scroll_pause_active = False
+            
+            # Resume timers only if window is still visible and not minimized
+            if self.isVisible() and not self.isMinimized():
+                if not self.metrics_timer.isActive():
+                    self.metrics_timer.start()
+                if not self.ros2_timer.isActive():
+                    self.ros2_timer.start()
+                if hasattr(self, 'live_charts') and hasattr(self.live_charts, 'update_timer'):
+                    if not self.live_charts.update_timer.isActive():
+                        self.live_charts.update_timer.start()
+        except Exception:
+            pass  # Silent fail
+        
     def update_metrics(self):
         """Update dashboard metrics - AGGRESSIVE debouncing"""
         import time
@@ -763,7 +836,9 @@ class MainWindow(QMainWindow):
             return
         self._last_metrics_update = current_time
         
-        if self._metrics_task_running:
+        # Skip if scroll pause is active
+        if self._scroll_pause_active:
+            return
             return
 
         worker = MetricsWorker(self.metrics_collector, self.ros2_manager, self.is_recording)
