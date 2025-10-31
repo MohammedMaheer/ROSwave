@@ -11,7 +11,7 @@ import yaml
 from datetime import datetime
 import psutil
 from typing import Optional, Dict, Any
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 import queue
 
 # Import ML exporter (lightweight packaging)
@@ -86,24 +86,40 @@ class ROS2Manager:
                 # Fetch types in parallel with reduced timeout per topic
                 if topic_names:
                     # Use thread pool to get types concurrently
-                    from concurrent.futures import ThreadPoolExecutor, as_completed
+                    from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
                     
-                    with ThreadPoolExecutor(max_workers=4) as executor:
+                    with ThreadPoolExecutor(max_workers=8) as executor:
                         # Submit all type fetches
                         future_to_topic = {
                             executor.submit(self._get_topic_type, t): t 
                             for t in topic_names
                         }
                         
-                        # Collect results as they complete
+                        # Collect results with graceful timeout handling
                         topic_types = {}
-                        for future in as_completed(future_to_topic, timeout=3.0):
-                            topic_name = future_to_topic[future]
+                        remaining_futures = set(future_to_topic.keys())
+                        timeout_per_batch = 45.0  # Total timeout for all remaining futures
+                        start_time = time.time()
+                        
+                        while remaining_futures and (time.time() - start_time) < timeout_per_batch:
                             try:
-                                msg_type = future.result()
-                                topic_types[topic_name] = msg_type
+                                done, remaining_futures = wait(
+                                    remaining_futures,
+                                    timeout=2.0,
+                                    return_when=FIRST_COMPLETED
+                                )
+                                
+                                # Process completed futures
+                                for future in done:
+                                    topic_name = future_to_topic[future]
+                                    try:
+                                        msg_type = future.result(timeout=0.1)
+                                        topic_types[topic_name] = msg_type
+                                    except Exception:
+                                        topic_types[topic_name] = "Unknown"
                             except Exception:
-                                topic_types[topic_name] = "Unknown"
+                                # If anything goes wrong, just process what we have
+                                break
                     
                     # Build topic list with types
                     for t in topic_names:
@@ -136,7 +152,7 @@ class ROS2Manager:
                 ['ros2', 'topic', 'type', topic_name],
                 capture_output=True,
                 text=True,
-                timeout=0.8  # 800ms timeout per topic
+                timeout=2.0  # Increased to 2.0s - topics can be slow to respond
             )
             
             if result.returncode == 0:
@@ -144,9 +160,11 @@ class ROS2Manager:
                 if msg_type:
                     return msg_type
         except subprocess.TimeoutExpired:
-            print(f"⚠️ Timeout getting type for {topic_name}")
+            # Silently fail - don't spam logs with timeout warnings
+            pass
         except Exception as e:
-            print(f"Error getting type for {topic_name}: {e}")
+            # Silently fail for other errors too
+            pass
             
         return "Unknown"
         
