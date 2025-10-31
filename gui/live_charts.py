@@ -541,6 +541,7 @@ class LiveChartsWidget(QWidget):
     def reset(self):
         """Reset for new recording session - clears data and resets state"""
         self.clear_charts()
+        self.start_time = None  # CRITICAL: Reset start time for new session
         self.update_counter = 0
         self.paused = not self.auto_pause  # Reset to default auto-pause state
         self.pause_btn.setText("⏸ Pause")
