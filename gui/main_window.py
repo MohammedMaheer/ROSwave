@@ -1129,6 +1129,11 @@ class MainWindow(QMainWindow):
         """Handle recording started event - optimize timers for active recording"""
         self.is_recording = True
         self.metrics_collector.reset()
+        
+        # CRITICAL: Reset live charts for new recording session
+        if hasattr(self, 'live_charts'):
+            self.live_charts.reset()
+        
         self.update_status("Recording in progress...")
         
         # CRITICAL: Start fast live metrics timer for chart updates

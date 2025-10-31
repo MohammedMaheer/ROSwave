@@ -538,6 +538,18 @@ class LiveChartsWidget(QWidget):
             self.status_label.setText("📊 Monitoring Active")
             self.status_label.setStyleSheet("color: #4CAF50; font-weight: bold;")
             
+    def reset(self):
+        """Reset for new recording session - clears data and resets state"""
+        self.clear_charts()
+        self.update_counter = 0
+        self.paused = not self.auto_pause  # Reset to default auto-pause state
+        self.pause_btn.setText("⏸ Pause")
+        self.status_label.setText("📊 Monitoring Active")
+        self.status_label.setStyleSheet("color: #4CAF50; font-weight: bold;")
+        # Clear statistics
+        for key in self.stats_labels:
+            self.stats_labels[key].setText("0")
+        
     def clear_charts(self):
         """Clear all chart data"""
         self.time_data.clear()
