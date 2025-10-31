@@ -90,11 +90,13 @@ class PerformanceModeManager(QObject):
         if memory_gb >= 16 and cpu_count >= 8:
             return PerformanceMode.HIGH
         
-        # Low-end: <8GB RAM OR <4 cores
-        elif memory_gb < 8 or cpu_count < 4:
+        # Low-end: <6GB RAM AND <4 cores (very constrained systems)
+        # Note: 4-core systems with 7-8GB RAM work better in BALANCED mode
+        elif memory_gb < 6 and cpu_count < 4:
             return PerformanceMode.LOW
         
-        # Balanced: Everything else (8-16GB RAM, 4-8 cores)
+        # Balanced: Everything else (6-16GB RAM, 4-8 cores)
+        # This includes 4-core laptops with 7.5GB RAM
         else:
             return PerformanceMode.BALANCED
     
@@ -174,37 +176,37 @@ class PerformanceModeManager(QObject):
                 'batch_updates': True,             # Batch table updates = smoother
             }
         
-        # LOW PERFORMANCE MODE (<8GB RAM, <4 cores) - OPTIMIZE FOR SMOOTHNESS
+        # LOW PERFORMANCE MODE (<6GB RAM, <4 cores) - OPTIMIZE FOR SMOOTHNESS
         else:  # PerformanceMode.LOW
             return {
                 # Timer intervals (ms) - SLOWER BUT SMOOTH
-                'ros2_update_interval': 4000,      # 4 seconds - minimal blocking
-                'metrics_update_interval': 800,    # 800ms - reasonable during recording
-                'history_update_interval': 20000,  # 20 seconds - minimal updates
-                'chart_update_interval': 1500,     # 1.5 seconds - acceptable smoothness
+                'ros2_update_interval': 3000,      # 3 seconds - less blocking
+                'metrics_update_interval': 600,    # 600ms - reasonable during recording
+                'history_update_interval': 15000,  # 15 seconds - minimal updates
+                'chart_update_interval': 1200,     # 1.2 seconds - acceptable smoothness
                 
                 # Thread pool settings - MINIMAL CONTENTION
                 'max_threads': 2,                  # Minimal threads
                 'max_concurrent_threads': 1,       # One at a time to avoid CPU thrashing
                 
                 # Cache settings (seconds) - MAXIMUM CACHING
-                'cache_timeout': 8,                # 8 seconds - aggressive caching
-                'system_metrics_cache': 2,         # 2 seconds - reduce system calls
-                'topic_check_interval': 8,         # 8 seconds - minimal checks
+                'cache_timeout': 6,                # 6 seconds - aggressive caching
+                'system_metrics_cache': 1,         # 1 second - reduce system calls
+                'topic_check_interval': 6,         # 6 seconds - minimal checks
                 
                 # Chart settings - OPTIMIZED FOR LOW-END
-                'chart_buffer_size': 40,           # 40 seconds of data
+                'chart_buffer_size': 50,           # 50 seconds of data
                 'chart_auto_pause': True,          # Auto-pause to save resources
                 
                 # Memory settings - CONSERVATIVE
-                'history_max_entries': 300,        # Minimal history
+                'history_max_entries': 500,        # Minimal history
                 'enable_profiler': False,          # Disable to save resources
                 'enable_advanced_features': True,  # Keep features but optimize
                 
                 # UI settings - SMOOTH ON LOW-END
                 'lazy_load_widgets': True,         # Lazy load everything
-                'process_priority': 'below_normal', # Lower priority
-                'debounce_interval': 500,          # Aggressive debounce
+                'process_priority': 'normal',      # Normal priority
+                'debounce_interval': 400,          # Moderate debounce
                 'batch_updates': True,             # Batch updates = fewer redraws
             }
     
