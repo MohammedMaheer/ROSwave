@@ -379,9 +379,11 @@ class ROS2Manager:
         """
         LIGHTWEIGHT monitoring of recording process with HEALTH CHECKS
         CRITICAL: This runs in separate thread and does NOT interfere with recording
-        Only checks process status, doesn't block or slow down data capture
+        Monitors ACTUAL recording activity (bag file size, I/O)
         """
         check_interval = 2.0  # Check every 2 seconds (low overhead)
+        last_size = 0
+        last_check_time = time.time()
         
         while self.is_recording and self.recording_process:
             try:
@@ -400,22 +402,72 @@ class ROS2Manager:
                     self.is_recording = False
                     break
                 
-                # HEALTH CHECK: Monitor process CPU and memory (lightweight)
+                # HEALTH CHECK: Monitor ACTUAL recording activity
                 try:
                     process = psutil.Process(self.recording_process.pid)
-                    cpu_percent = process.cpu_percent(interval=0.1)
+                    
+                    # Get bag file size (shows actual recording activity)
+                    current_size_mb = 0
+                    write_speed_mb_s = 0
+                    if self.current_bag_path and os.path.exists(self.current_bag_path):
+                        try:
+                            # Get total size of all files in bag directory
+                            total_size = 0
+                            for root, dirs, files in os.walk(self.current_bag_path):
+                                for f in files:
+                                    fp = os.path.join(root, f)
+                                    if os.path.exists(fp):
+                                        total_size += os.path.getsize(fp)
+                            current_size_mb = total_size / 1024 / 1024
+                            
+                            # Calculate write speed
+                            current_time = time.time()
+                            time_diff = current_time - last_check_time
+                            if time_diff > 0:
+                                size_diff = current_size_mb - last_size
+                                write_speed_mb_s = size_diff / time_diff
+                            
+                            last_size = current_size_mb
+                            last_check_time = current_time
+                        except Exception:
+                            pass
+                    
+                    # Get process stats (these are often low for I/O-bound processes)
+                    cpu_percent = process.cpu_percent(interval=0)  # Non-blocking
                     memory_mb = process.memory_info().rss / 1024 / 1024
                     
                     # Log health every 30 checks (~1 minute)
                     if self.recording_health_checks % 30 == 0:
                         elapsed = time.time() - (self.recording_start_time or time.time())
-                        print(f"📊 Recording health: {elapsed:.0f}s elapsed, "
-                              f"CPU={cpu_percent:.1f}%, MEM={memory_mb:.1f}MB, "
-                              f"PID={self.recording_process.pid}")
+                        
+                        # Show ACTUAL recording activity (bag size and write speed)
+                        if current_size_mb > 0:
+                            print(f"📊 Recording health: {elapsed:.0f}s elapsed, "
+                                  f"Size={current_size_mb:.1f}MB, Write={write_speed_mb_s:.2f}MB/s, "
+                                  f"PID={self.recording_process.pid}")
+                        else:
+                            # Fallback to process stats if bag size not available
+                            print(f"📊 Recording health: {elapsed:.0f}s elapsed, "
+                                  f"CPU={cpu_percent:.1f}%, MEM={memory_mb:.1f}MB, "
+                                  f"PID={self.recording_process.pid}")
                     
                     # Warn if recording process is using excessive resources
                     if memory_mb > 2000:  # > 2GB
                         warning = f"High memory usage: {memory_mb:.1f}MB"
+                        if warning not in self.recording_warnings:
+                            self.recording_warnings.append(warning)
+                            print(f"⚠️  {warning}")
+                    
+                    # Warn if bag file is growing too fast (> 100MB/s might fill disk)
+                    if write_speed_mb_s > 100:
+                        warning = f"High write speed: {write_speed_mb_s:.1f}MB/s - disk may fill quickly"
+                        if warning not in self.recording_warnings:
+                            self.recording_warnings.append(warning)
+                            print(f"⚠️  {warning}")
+                    
+                    # Warn if recording stalled (no growth for 2+ minutes when size > 0)
+                    if current_size_mb > 0.1 and write_speed_mb_s < 0.001 and elapsed > 120:
+                        warning = "Recording may be stalled (no data growth)"
                         if warning not in self.recording_warnings:
                             self.recording_warnings.append(warning)
                             print(f"⚠️  {warning}")
@@ -506,11 +558,37 @@ class ROS2Manager:
             process = psutil.Process(self.recording_process.pid)
             elapsed = time.time() - (self.recording_start_time or time.time())
             
+            # Calculate bag file size and write speed (actual recording activity)
+            bag_size_mb = 0.0
+            write_speed_mbps = 0.0
+            
+            if self.current_bag_path and os.path.exists(self.current_bag_path):
+                try:
+                    # Walk bag directory and sum all file sizes
+                    for root, _, files in os.walk(self.current_bag_path):
+                        for file in files:
+                            file_path = os.path.join(root, file)
+                            if os.path.isfile(file_path):
+                                bag_size_mb += os.path.getsize(file_path) / (1024 * 1024)
+                    
+                    # Calculate write speed if we have previous size
+                    if hasattr(self, '_last_bag_size') and hasattr(self, '_last_size_check_time'):
+                        time_delta = time.time() - self._last_size_check_time
+                        if time_delta > 0:
+                            size_delta = bag_size_mb - self._last_bag_size
+                            write_speed_mbps = size_delta / time_delta
+                    
+                    # Update tracking
+                    self._last_bag_size = bag_size_mb
+                    self._last_size_check_time = time.time()
+                except Exception as e:
+                    print(f"⚠️  Failed to calculate bag size: {e}")
+            
             return {
                 'pid': self.recording_process.pid,
                 'elapsed_seconds': int(elapsed),
-                'cpu_percent': process.cpu_percent(interval=0.1),
-                'memory_mb': process.memory_info().rss / 1024 / 1024,
+                'bag_size_mb': round(bag_size_mb, 2),
+                'write_speed_mbps': round(write_speed_mbps, 2),
                 'health_checks': self.recording_health_checks,
                 'warnings': self.recording_warnings.copy(),
                 'is_alive': process.is_running(),
