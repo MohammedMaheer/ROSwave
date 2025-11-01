@@ -324,8 +324,8 @@ class MainWindow(QMainWindow):
         playback_scroll.setWidgetResizable(True)
         self.tabs.addTab(playback_scroll, "▶️ Playback")
         
-        # Tab 6: Advanced Stats (with scroll area)
-        self.advanced_stats = AdvancedStatsWidget(self.ros2_manager)
+        # Tab 6: Advanced Stats (with scroll area) - pass metrics_collector for accurate recording stats
+        self.advanced_stats = AdvancedStatsWidget(self.ros2_manager, self.metrics_collector)
         stats_scroll = QScrollArea()
         stats_scroll.setWidget(self.advanced_stats)
         stats_scroll.setWidgetResizable(True)

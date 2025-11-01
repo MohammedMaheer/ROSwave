@@ -522,6 +522,10 @@ class LiveChartsWidget(QWidget):
         
         self.update_counter += 1
         
+        # DEBUG: Print every 30 updates (~10 seconds at 300ms interval)
+        if self.update_counter % 30 == 0:
+            print(f"📊 Live Charts update #{self.update_counter}, data points: {len(self.time_data)}")
+        
         # CRITICAL OPTIMIZATION: Use DYNAMIC thresholds based on system specs
         # This adapts to the user's hardware automatically
         need_plot_update = (self.update_counter % self.plot_skip_threshold == 0)
@@ -563,7 +567,14 @@ class LiveChartsWidget(QWidget):
             metrics = self.metrics_collector.get_live_metrics(None)
             if metrics is None:
                 metrics = {}
-        except Exception:
+            
+            # DEBUG: Print metrics every 30 updates
+            if self.update_counter % 30 == 0:
+                print(f"   Metrics: CPU={metrics.get('cpu_percent', 0):.1f}%, "
+                      f"MEM={metrics.get('memory_percent', 0):.1f}%, "
+                      f"Topics={metrics.get('topic_count', 0)}")
+        except Exception as e:
+            print(f"⚠️  Error getting metrics: {e}")
             metrics = {}
         
         # Ensure all required metrics exist with numeric defaults

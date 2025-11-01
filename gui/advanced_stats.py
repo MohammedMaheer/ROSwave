@@ -12,9 +12,10 @@ import psutil
 class AdvancedStatsWidget(QWidget):
     """Widget for displaying advanced system and ROS2 statistics"""
     
-    def __init__(self, ros2_manager):
+    def __init__(self, ros2_manager, metrics_collector=None):
         super().__init__()
         self.ros2_manager = ros2_manager
+        self.metrics_collector = metrics_collector
         self.init_ui()
         
     def init_ui(self):
@@ -159,13 +160,22 @@ class AdvancedStatsWidget(QWidget):
             mem_total_mb = mem.total / (1024 * 1024)
             self.mem_value.setText(f"{mem_used_mb:.0f} MB / {mem_total_mb:.0f} MB ({mem.percent:.1f}%)")
             
-            # Disk I/O
-            disk_io = psutil.disk_io_counters()
-            if self.last_disk_io:
-                write_bytes = disk_io.write_bytes - self.last_disk_io.write_bytes
-                write_mb_s = write_bytes / (1024 * 1024 * 2)  # 2 second interval
-                self.disk_io_value.setText(f"{write_mb_s:.2f} MB/s")
-            self.last_disk_io = disk_io
+            # Disk I/O - show recording write speed when recording, otherwise system disk I/O
+            if self.metrics_collector and self.ros2_manager.is_recording:
+                # During recording: show actual bag write speed from metrics
+                metrics = self.metrics_collector.get_metrics()
+                write_speed = metrics.get('write_speed_mb_s', 0)
+                self.disk_io_value.setText(f"{write_speed:.2f} MB/s")
+                self.disk_io_value.setStyleSheet("color: #4CAF50; font-weight: bold;")  # Green when recording
+            else:
+                # When not recording: show system-wide disk writes
+                disk_io = psutil.disk_io_counters()
+                if self.last_disk_io:
+                    write_bytes = disk_io.write_bytes - self.last_disk_io.write_bytes
+                    write_mb_s = write_bytes / (1024 * 1024 * 2)  # 2 second interval
+                    self.disk_io_value.setText(f"{write_mb_s:.2f} MB/s")
+                    self.disk_io_value.setStyleSheet("")  # Reset style
+                self.last_disk_io = disk_io
             
             # Network I/O
             net_io = psutil.net_io_counters()
