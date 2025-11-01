@@ -180,7 +180,6 @@ class ROS2Manager:
                                     topic_info['hz'] = hz_values[topic_info['name']]
                         except Exception as e:
                             # If Hz fetching fails, topics already have 0.0 as default
-                            print(f"⚠️  Could not fetch topic Hz values: {e}")
                             pass
                 
                 # CACHE immediately
@@ -249,18 +248,20 @@ class ROS2Manager:
     def _get_topic_hz_fast(self, topic_name):
         """Get the publishing frequency of a topic FAST with short timeout"""
         try:
-            # Use ros2 topic hz with 2 second timeout to get actual rate
+            # Use ros2 topic hz with 2.5 second timeout to get actual rate
             # This waits for at least 2 messages to calculate average
+            # NOTE: Very slow topics (< 2 Hz) may timeout without getting rate
             result = subprocess.run(
                 ['ros2', 'topic', 'hz', topic_name],
                 capture_output=True,
                 text=True,
-                timeout=2.0  # 2 seconds to get a real average (not just 1 message)
+                timeout=2.5  # 2.5 seconds - balance between speed and accuracy
             )
             
             # Parse the output - look for the "average rate:" line
+            # NOTE: ros2 topic hz keeps running until killed, so we get output even on timeout
             lines = result.stdout.strip().split('\n')
-            for line in reversed(lines):
+            for line in lines:
                 if 'average rate:' in line.lower():
                     # Extract Hz value from "average rate: 10.234"
                     try:
@@ -269,9 +270,25 @@ class ROS2Manager:
                         return max(0, hz)  # Ensure non-negative
                     except (ValueError, IndexError):
                         pass
-        except subprocess.TimeoutExpired:
-            # Timeout after 2 seconds - topic might be slow or not publishing
-            # Return 0 to indicate we couldn't measure it
+                        
+        except subprocess.TimeoutExpired as e:
+            # Timeout is EXPECTED - ros2 topic hz runs forever
+            # Parse the output we got before timeout
+            # CRITICAL: e.stdout is BYTES even when text=True was used in Popen!
+            try:
+                if e.stdout:
+                    # Decode bytes to string
+                    output_str = e.stdout.decode('utf-8') if isinstance(e.stdout, bytes) else str(e.stdout)
+                    lines = output_str.strip().split('\n')
+                    for line in lines:
+                        if 'average rate:' in line.lower():
+                            hz_str = line.split(':')[-1].strip()
+                            hz = float(hz_str)
+                            return max(0, hz)
+            except Exception:
+                pass
+            # If we got a timeout but no output, topic might not be publishing
+            # or is too slow (< 2 Hz needs > 2.5s to measure)
             return 0.0
         except Exception:
             pass
