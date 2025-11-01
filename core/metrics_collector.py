@@ -18,6 +18,7 @@ class MetricsCollector:
         self.last_update_time: Optional[float] = None
         self.last_size: float = 0.0
         self.last_disk_io = None
+        self.last_message_count: int = 0  # Track message count for rate calculation
         
         # Adaptive caching for performance
         self.system_metrics_cache_timeout = 1.0  # Will be updated by performance mode
@@ -51,6 +52,7 @@ class MetricsCollector:
             self.last_update_time = self.start_time
             self.last_size = 0.0
             self.last_disk_io = None
+            self.last_message_count = 0
             self.metrics = {
                 'duration': 0.0,
                 'size_mb': 0.0,
@@ -98,12 +100,16 @@ class MetricsCollector:
                 current_size_mb = current_size / (1024 * 1024)
                 self.metrics['size_mb'] = current_size_mb
                 
-                # Calculate write speed
+                # Calculate INSTANTANEOUS write speed (MB/s since last update)
+                # This gives a real-time indicator of current recording throughput
                 if self.last_update_time and self.last_update_time != self.start_time:
                     time_delta = current_time - self.last_update_time
                     if time_delta > 0:
                         size_delta_mb = current_size_mb - self.last_size
                         self.metrics['write_speed_mb_s'] = max(0, size_delta_mb / time_delta)
+                else:
+                    # First update - no delta available yet
+                    self.metrics['write_speed_mb_s'] = 0.0
                         
                 self.last_size = current_size_mb
                 self.last_update_time = current_time
@@ -126,9 +132,20 @@ class MetricsCollector:
                 if current_size_mb > 0:
                     self.metrics['message_count'] = int(current_size_mb * 1024 / avg_msg_size_kb)
                 
-                # Calculate message rate
-                if self.metrics['duration'] > 0 and self.metrics['message_count'] > 0:
-                    self.metrics['message_rate'] = self.metrics['message_count'] / self.metrics['duration']
+                # Calculate INSTANTANEOUS message rate (messages/sec since last update)
+                # This matches the write_speed calculation method for consistency
+                if self.last_update_time and self.last_update_time != self.start_time and time_delta > 0:
+                    msg_delta = self.metrics['message_count'] - self.last_message_count
+                    self.metrics['message_rate'] = max(0, msg_delta / time_delta)
+                else:
+                    # First update - no delta available yet, estimate from duration
+                    if self.metrics['duration'] > 0:
+                        self.metrics['message_rate'] = self.metrics['message_count'] / self.metrics['duration']
+                    else:
+                        self.metrics['message_rate'] = 0.0
+                
+                # Update last message count for next iteration
+                self.last_message_count = self.metrics['message_count']
             else:
                 # CRITICAL: If no bag path yet, still ensure metrics have reasonable placeholder values
                 # This prevents charts from showing zeros during early recording startup
