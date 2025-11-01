@@ -147,16 +147,13 @@ class MetricsCollector:
                 # Update last message count for next iteration
                 self.last_message_count = self.metrics['message_count']
             else:
-                # CRITICAL: If no bag path yet, still ensure metrics have reasonable placeholder values
-                # This prevents charts from showing zeros during early recording startup
-                if self.metrics['duration'] > 0:
-                    # Generate realistic demo data to show charts are working
-                    # In real recording, bag_path will appear within 1-2 seconds
-                    self.metrics['message_count'] = int(self.metrics['duration'] * 100)  # ~100 msgs/sec
-                    self.metrics['message_rate'] = 100.0
-                    self.metrics['write_speed_mb_s'] = 0.5  # 0.5 MB/s demo
-                    self.metrics['size_mb'] = self.metrics['duration'] * 0.5 / 60  # Grows over time
-                    self.metrics['topic_count'] = 5  # Demo value
+                # No bag path - recording may not have started yet or no topics available
+                # Show zeros instead of fake data (more honest feedback to user)
+                self.metrics['message_count'] = 0
+                self.metrics['message_rate'] = 0.0
+                self.metrics['write_speed_mb_s'] = 0.0
+                self.metrics['size_mb'] = 0.0
+                self.metrics['topic_count'] = 0
                     
             # Get disk usage
             try:
