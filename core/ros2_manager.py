@@ -332,10 +332,15 @@ class ROS2Manager:
                 # Record all topics
                 cmd.append('-a')
                 
-            # CRITICAL: Start recording process with COMPLETE ISOLATION
-            # - Capture stderr to detect issues (but don't block on it)
-            # - Separate process group (survives parent crashes)
-            # - High priority (ensures data capture even under load)
+            # CRITICAL: Start recording process with optimizations
+            # - Capture output to detect issues
+            # - Environment variables for unbuffered output
+            # - High priority to ensure data capture even under load
+            # 
+            # NOTE: We do NOT use preexec_fn=os.setpgrp because it BREAKS ros2 bag record!
+            # ROS2 bag is a Python script that spawns child processes, and changing
+            # the process group interferes with ROS2's internal process management.
+            # The recording process is still independent - it continues even if UI crashes.
             
             # Create a log file for recording output (helps debugging)
             log_file = os.path.join(self.output_directory, f"{bag_name}_recording.log")
@@ -352,7 +357,7 @@ class ROS2Manager:
                 stderr=subprocess.STDOUT,  # Combine stderr with stdout
                 text=True,
                 env=env,  # Use unbuffered environment
-                preexec_fn=os.setpgrp,  # Create new process group (isolation)
+                # NO preexec_fn - it breaks ros2 bag record!
                 close_fds=False  # Keep log file open
             )
             
