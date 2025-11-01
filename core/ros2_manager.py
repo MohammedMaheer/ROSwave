@@ -75,19 +75,19 @@ class ROS2Manager:
     def _calculate_subprocess_timeout(self):
         """Calculate subprocess timeout based on performance mode"""
         if not self.performance_mode_manager:
-            # Default: 8 seconds (safe for most systems)
-            return 8.0
+            # CRITICAL FIX: Reduce from 8s to 3s (prevents "not responding" dialogs)
+            return 3.0
         
         try:
             mode_settings = self.performance_mode_manager.get_mode_settings()
-            # Use cache_timeout as baseline, but ensure minimum 7 seconds for ROS2 operations
-            # get_topics_info() observed at 6.168 seconds, so we need at least 7-8 seconds
-            cache_timeout = mode_settings.get('cache_timeout', 5.0)
-            # Add 2-3 seconds buffer to the cache timeout (operations may take longer than cache)
-            return max(8.0, cache_timeout + 3.0)
+            # CRITICAL FIX: Shorter timeout to prevent UI freeze
+            # Use cache_timeout as baseline, but cap at 3 seconds max
+            cache_timeout = mode_settings.get('cache_timeout', 2.0)
+            # Maximum 3 seconds to prevent "not responding" dialogs
+            return min(3.0, cache_timeout + 1.0)
         except Exception:
-            # Fallback to safe timeout on any error
-            return 8.0
+            # Fallback to fast timeout
+            return 3.0
     
     def update_subprocess_timeout(self):
         """Update subprocess timeout (call this if performance mode changes)"""
@@ -135,14 +135,14 @@ class ROS2Manager:
                         # Collect results with graceful timeout handling
                         topic_types = {}
                         remaining_futures = set(future_to_topic.keys())
-                        timeout_per_batch = 45.0  # Total timeout for all remaining futures
+                        timeout_per_batch = 3.0  # CRITICAL FIX: Reduce from 45s to 3s (prevents UI freeze)
                         start_time = time.time()
                         
                         while remaining_futures and (time.time() - start_time) < timeout_per_batch:
                             try:
                                 done, remaining_futures = wait(
                                     remaining_futures,
-                                    timeout=2.0,
+                                    timeout=0.5,  # CRITICAL FIX: Reduce from 2.0s to 0.5s
                                     return_when=FIRST_COMPLETED
                                 )
                                 
@@ -285,11 +285,11 @@ class ROS2Manager:
                 for topic in topic_names
             }
             
-            # Collect results with timeout
-            for future in as_completed(future_to_topic, timeout=15.0):
+            # Collect results with timeout - CRITICAL FIX: Reduce from 15s to 3s
+            for future in as_completed(future_to_topic, timeout=3.0):
                 try:
                     topic = future_to_topic[future]
-                    hz_value = future.result(timeout=1.0)
+                    hz_value = future.result(timeout=0.5)  # CRITICAL FIX: Reduce from 1s to 0.5s
                     hz_dict[topic] = hz_value
                 except Exception:
                     hz_dict[topic] = 0.0
@@ -603,7 +603,7 @@ class ROS2Manager:
                 ['ros2', 'node', 'list'],
                 capture_output=True,
                 text=True,
-                timeout=2.0  # Increased timeout for first call
+                timeout=1.0  # CRITICAL FIX: Reduce from 2.0s to 1.0s
             )
             
             if result.returncode == 0:
@@ -650,7 +650,7 @@ class ROS2Manager:
                 ['ros2', 'node', 'info', node_name],
                 capture_output=True,
                 text=True,
-                timeout=2
+                timeout=1  # CRITICAL FIX: Reduce from 2s to 1s
             )
             
             if result.returncode == 0:
@@ -675,7 +675,7 @@ class ROS2Manager:
                 ['ros2', 'node', 'info', node_name],
                 capture_output=True,
                 text=True,
-                timeout=2
+                timeout=1  # CRITICAL FIX: Reduce from 2s to 1s
             )
             
             if result.returncode == 0:
@@ -711,7 +711,7 @@ class ROS2Manager:
                 ['ros2', 'service', 'list'],
                 capture_output=True,
                 text=True,
-                timeout=2.0  # Increased timeout for first call
+                timeout=1.0  # CRITICAL FIX: Reduce from 2.0s to 1.0s
             )
             
             if result.returncode == 0:

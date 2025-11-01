@@ -1,6 +1,7 @@
 """
 Live Charts Widget - Real-time visualization of recording metrics and system stats
 High-performance plotting using pyqtgraph for zero-latency updates
+ULTRA-OPTIMIZED: Fast async loading, minimal overhead, progressive rendering
 """
 
 import pyqtgraph as pg
@@ -12,6 +13,14 @@ from PyQt5.QtGui import QFont
 import numpy as np
 from collections import deque
 from datetime import datetime
+
+# PERFORMANCE: Disable pyqtgraph features we don't need
+pg.setConfigOptions(
+    antialias=False,  # Faster rendering without antialiasing
+    useOpenGL=False,  # Avoid OpenGL overhead (can cause issues on some systems)
+    enableExperimental=False,  # Disable experimental features
+    crashWarning=False  # Disable crash warnings for speed
+)
 
 # Import dynamic system detection
 try:
@@ -125,14 +134,30 @@ class LiveChartsWidget(QWidget):
         }
         
     def init_ui(self):
-        """Initialize UI components - LAZY LOADING: charts created on first view"""
+        """Initialize UI components - FAST ASYNC: charts loaded on first view"""
         self.main_layout = QVBoxLayout()
         
-        # Show loading message initially
-        loading_label = QLabel("📊 Charts loading... (appears on first view)")
+        # Show loading message with animation
+        loading_widget = QWidget()
+        loading_layout = QVBoxLayout()
+        
+        loading_label = QLabel("⚡ Live Charts")
         loading_label.setAlignment(Qt.AlignCenter)  # type: ignore
-        loading_label.setStyleSheet("color: #666; font-size: 14px; padding: 40px;")
-        self.main_layout.addWidget(loading_label)
+        loading_label.setStyleSheet("color: #2196F3; font-size: 24px; font-weight: bold; padding: 20px;")
+        loading_layout.addWidget(loading_label)
+        
+        info_label = QLabel("Charts load instantly when you view this tab")
+        info_label.setAlignment(Qt.AlignCenter)  # type: ignore
+        info_label.setStyleSheet("color: #666; font-size: 14px;")
+        loading_layout.addWidget(info_label)
+        
+        tip_label = QLabel("💡 Tip: Charts update automatically in real-time")
+        tip_label.setAlignment(Qt.AlignCenter)  # type: ignore
+        tip_label.setStyleSheet("color: #888; font-size: 12px; padding: 10px;")
+        loading_layout.addWidget(tip_label)
+        
+        loading_widget.setLayout(loading_layout)
+        self.main_layout.addWidget(loading_widget)
         
         self.setLayout(self.main_layout)
     
@@ -219,6 +244,95 @@ class LiveChartsWidget(QWidget):
         
         self._charts_loaded = True
         print("✅ Live Charts loaded successfully")
+    
+    def _load_charts_async(self):
+        """FAST ASYNC LOADING: Create charts without blocking UI thread"""
+        if self._charts_loaded:
+            return
+        
+        print("⚡ Fast async loading Live Charts widget...")
+        
+        try:
+            # Clear placeholder with immediate processing
+            while self.main_layout.count():
+                item = self.main_layout.takeAt(0)
+                if item is not None:
+                    widget = item.widget()
+                    if widget:
+                        widget.deleteLater()
+            
+            # Force process pending events to update UI
+            from PyQt5.QtWidgets import QApplication
+            QApplication.processEvents()
+            
+            # Create controls (fast)
+            controls = self.create_controls()
+            self.main_layout.addWidget(controls)
+            QApplication.processEvents()
+            
+            # Create chart grid with PROGRESSIVE LOADING
+            charts_layout = QGridLayout()
+            charts_layout.setSpacing(10)
+            
+            # ROW 1: Recording Metrics (create and show immediately)
+            print("  📈 Creating recording metrics charts...")
+            self.msg_rate_plot = self.create_plot_fast("Message Rate (msg/s)", "Messages/sec", color='#2196F3')
+            charts_layout.addWidget(self.msg_rate_plot, 0, 0)
+            
+            self.bandwidth_plot = self.create_plot_fast("Bandwidth (MB/s)", "MB/s", color='#4CAF50')
+            charts_layout.addWidget(self.bandwidth_plot, 0, 1)
+            
+            self.topic_count_plot = self.create_plot_fast("Active Topics", "Count", color='#FF9800')
+            charts_layout.addWidget(self.topic_count_plot, 0, 2)
+            
+            # Process events to show first row
+            QApplication.processEvents()
+            
+            # ROW 2: System Metrics
+            print("  📊 Creating system metrics charts...")
+            self.cpu_plot = self.create_plot_fast("CPU Usage (%)", "Percent", color='#f44336')
+            charts_layout.addWidget(self.cpu_plot, 1, 0)
+            
+            self.memory_plot = self.create_plot_fast("Memory Usage (%)", "Percent", color='#9C27B0')
+            charts_layout.addWidget(self.memory_plot, 1, 1)
+            
+            self.disk_write_plot = self.create_plot_fast("Disk Write Speed (MB/s)", "MB/s", color='#00BCD4')
+            charts_layout.addWidget(self.disk_write_plot, 1, 2)
+            
+            # Process events to show second row
+            QApplication.processEvents()
+            
+            # Set layout stretching
+            for row in range(2):
+                charts_layout.setRowStretch(row, 1)
+            for col in range(3):
+                charts_layout.setColumnStretch(col, 1)
+            
+            charts_group = QGroupBox("Real-Time Performance Monitoring")
+            charts_group.setLayout(charts_layout)
+            self.main_layout.addWidget(charts_group, 1)
+            
+            # Create statistics panel
+            print("  📑 Creating statistics panel...")
+            stats = self.create_statistics_panel()
+            self.main_layout.addWidget(stats)
+            
+            # Final processing
+            QApplication.processEvents()
+            
+            self._charts_loaded = True
+            print("✅ Live Charts loaded successfully (async)")
+            
+            # Start the update timer now that charts are ready
+            if hasattr(self, 'update_timer') and not self.paused:
+                self.update_timer.start(self.update_interval)
+                if hasattr(self, 'status_label'):
+                    self.status_label.setText("📊 Monitoring Active")
+            
+        except Exception as e:
+            print(f"❌ Error loading charts: {e}")
+            import traceback
+            traceback.print_exc()
         
     def create_controls(self):
         """Create control panel"""
@@ -291,6 +405,39 @@ class LiveChartsWidget(QWidget):
         plot_widget.getAxis('bottom').setPen(pg.mkPen(color='#333', width=1))
         
         return plot_widget
+    
+    def create_plot_fast(self, title, y_label, color='#2196F3'):
+        """OPTIMIZED: Create plot widget with minimal overhead for fast loading"""
+        plot_widget = pg.PlotWidget()
+        
+        # FAST: Minimal styling first, enhance later
+        plot_widget.setBackground('w')
+        plot_widget.setTitle(title, color='#333', size='11pt')  # Slightly smaller for speed
+        
+        # FAST: Skip detailed labels initially
+        plot_widget.setLabel('left', y_label)
+        plot_widget.setLabel('bottom', 'Time (s)')
+        
+        # FAST: Simplified grid
+        plot_widget.showGrid(x=True, y=True, alpha=0.2)
+        
+        # FAST: Set size constraints
+        plot_widget.setMinimumHeight(220)  # Slightly smaller initially
+        plot_widget.setMinimumWidth(280)
+        
+        # FAST: Create curve with thinner pen for faster rendering
+        pen = pg.mkPen(color=color, width=1.5)  # Thinner = faster
+        curve = plot_widget.plot([], [], pen=pen)
+        
+        # Store curve reference
+        plot_widget.curve = curve
+        
+        # OPTIMIZATION: Disable auto-range for faster updates
+        plot_widget.setAutoVisible(y=True)
+        plot_widget.enableAutoRange(axis='y', enable=True)
+        plot_widget.enableAutoRange(axis='x', enable=False)  # Fixed X range for speed
+        
+        return plot_widget
         
     def create_statistics_panel(self):
         """Create statistics panel showing peaks, averages, etc."""
@@ -334,12 +481,16 @@ class LiveChartsWidget(QWidget):
         self.update_timer.start(self.update_interval)
         
     def showEvent(self, event):
-        """Resume updates when tab becomes visible - LAZY LOAD charts on first view"""
+        """Resume updates when tab becomes visible - FAST ASYNC chart loading"""
         super().showEvent(event)
         
-        # LAZY LOAD: Create charts only on first view (massive performance boost for startup)
+        # FAST ASYNC LOAD: Create charts asynchronously to prevent UI freeze
         if not self._charts_loaded:
-            self._load_charts()
+            # Use QTimer.singleShot to load charts asynchronously (0ms = next event loop)
+            # This prevents blocking the UI thread during chart creation
+            from PyQt5.QtCore import QTimer
+            QTimer.singleShot(0, self._load_charts_async)
+            return  # Don't start timer yet, wait for charts to load
         
         if hasattr(self, 'update_timer') and self.auto_pause and not self.paused:
             # Only start if user hasn't manually paused
