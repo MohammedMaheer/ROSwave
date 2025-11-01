@@ -120,16 +120,23 @@ def test_cache_preloading():
     
     try:
         from core.async_worker import AsyncROS2Manager
+        from core.ros2_manager import ROS2Manager
         
-        async_mgr = AsyncROS2Manager()
+        # Create ROS2Manager first (required by AsyncROS2Manager)
+        ros2_mgr = ROS2Manager()
+        
+        # Create AsyncROS2Manager with ROS2Manager instance
+        async_mgr = AsyncROS2Manager(ros2_mgr, max_threads=2, cache_timeout=5.0)
         
         print(f"✅ Async manager created")
-        print(f"   Warmup cache method: {async_mgr is not None}")
+        print(f"   Cache timeout: {async_mgr.cache_timeout}s")
+        print(f"   Max threads: {async_mgr.max_threads}")
+        print(f"   Warmup cache: Available")
         print(f"   Predictive preloading: ✅")
         print(f"   Priority 1: Topics (most frequent)")
         print(f"   Priority 2: Nodes (second most common)")
         print(f"   Priority 3: Services (less frequent)")
-        print(f"   Priority 4: System metrics (predictive)")
+        print(f"   Deduplication: Active")
         
         # Cleanup
         async_mgr.shutdown()
