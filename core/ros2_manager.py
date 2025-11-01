@@ -165,8 +165,23 @@ class ROS2Manager:
                             'name': t, 
                             'type': topic_types.get(t, "Unknown"),
                             'publisher_count': 1,  # Assume publishing if in list
-                            'hz': 0.0  # Hz will be 0 (too slow to fetch for all)
+                            'hz': 0.0  # Placeholder - will be updated below
                         })
+                    
+                    # Fetch Hz values in parallel (fast method with timeout)
+                    # Only fetch for topics that have known types (skip Unknown to save time)
+                    topics_to_check = [t for t in topic_names if topic_types.get(t, "Unknown") != "Unknown"]
+                    if topics_to_check:
+                        try:
+                            hz_values = self.get_topics_hz_batch(topics_to_check, max_workers=8)
+                            # Update Hz values in topics list
+                            for topic_info in topics:
+                                if topic_info['name'] in hz_values:
+                                    topic_info['hz'] = hz_values[topic_info['name']]
+                        except Exception as e:
+                            # If Hz fetching fails, topics already have 0.0 as default
+                            print(f"⚠️  Could not fetch topic Hz values: {e}")
+                            pass
                 
                 # CACHE immediately
                 with self._cache_lock:
@@ -234,29 +249,31 @@ class ROS2Manager:
     def _get_topic_hz_fast(self, topic_name):
         """Get the publishing frequency of a topic FAST with short timeout"""
         try:
-            # Use ros2 topic hz with 100ms timeout (ultra fast, just 1 message)
+            # Use ros2 topic hz with 2 second timeout to get actual rate
+            # This waits for at least 2 messages to calculate average
             result = subprocess.run(
                 ['ros2', 'topic', 'hz', topic_name],
                 capture_output=True,
                 text=True,
-                timeout=0.1  # ULTRA short timeout - just get 1 message
+                timeout=2.0  # 2 seconds to get a real average (not just 1 message)
             )
             
-            # Parse the output - look for the last "average:" line
+            # Parse the output - look for the "average rate:" line
             lines = result.stdout.strip().split('\n')
             for line in reversed(lines):
-                if 'average:' in line.lower():
-                    # Extract Hz value from "average: 10.23 Hz"
+                if 'average rate:' in line.lower():
+                    # Extract Hz value from "average rate: 10.234"
                     try:
-                        hz_str = line.split(':')[-1].replace('Hz', '').strip()
+                        hz_str = line.split(':')[-1].strip()
                         hz = float(hz_str)
                         return max(0, hz)  # Ensure non-negative
                     except (ValueError, IndexError):
                         pass
         except subprocess.TimeoutExpired:
-            # Timeout is expected - topic is likely publishing, return positive number
-            return 1.0  # Assume at least 1 Hz if it started publishing
-        except Exception as e:
+            # Timeout after 2 seconds - topic might be slow or not publishing
+            # Return 0 to indicate we couldn't measure it
+            return 0.0
+        except Exception:
             pass
         
         return 0.0
@@ -286,14 +303,23 @@ class ROS2Manager:
                 for topic in topic_names
             }
             
-            # Collect results with timeout - CRITICAL FIX: Reduce from 15s to 3s
-            for future in as_completed(future_to_topic, timeout=3.0):
-                try:
-                    topic = future_to_topic[future]
-                    hz_value = future.result(timeout=0.5)  # CRITICAL FIX: Reduce from 1s to 0.5s
-                    hz_dict[topic] = hz_value
-                except Exception:
-                    hz_dict[topic] = 0.0
+            # Collect results with timeout - allow 3s total for batch (topics run in parallel)
+            try:
+                for future in as_completed(future_to_topic, timeout=3.0):
+                    try:
+                        topic = future_to_topic[future]
+                        hz_value = future.result(timeout=0.1)
+                        hz_dict[topic] = hz_value
+                    except Exception:
+                        # If a specific topic fails, continue with others
+                        topic = future_to_topic.get(future)
+                        if topic:
+                            hz_dict[topic] = 0.0
+            except Exception:
+                # If batch times out, fill remaining with 0.0
+                for topic in topic_names:
+                    if topic not in hz_dict:
+                        hz_dict[topic] = 0.0
         
         return hz_dict
         
