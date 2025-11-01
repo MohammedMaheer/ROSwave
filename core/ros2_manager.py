@@ -22,6 +22,13 @@ except Exception:
     package_bag_for_ml = None
     populate_schema_with_bag_info = None
 
+# Import CPU optimizer for advanced performance
+try:
+    from .cpu_optimizer import get_cpu_optimizer
+    CPU_OPTIMIZER_AVAILABLE = True
+except Exception:
+    CPU_OPTIMIZER_AVAILABLE = False
+
 
 class ROS2Manager:
     """Manages ROS2 bag recording and topic information - AGGRESSIVE OPTIMIZATION"""
@@ -331,6 +338,13 @@ class ROS2Manager:
                 # This ensures recording gets CPU even if UI is consuming resources
                 process.nice(-5)
                 print(f"✅ Recording process priority set to HIGH (nice=-5)")
+                
+                # ADVANCED: Pin recording process to dedicated CPU cores
+                if CPU_OPTIMIZER_AVAILABLE:
+                    cpu_opt = get_cpu_optimizer()
+                    if cpu_opt.pin_recording_process(self.recording_process.pid):
+                        print(f"✅ Recording process pinned to dedicated cores")
+                
             except Exception as e:
                 print(f"⚠️  Could not set recording priority: {e} (may need sudo)")
             

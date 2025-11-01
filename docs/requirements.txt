@@ -1,0 +1,22 @@
+# Core GUI Framework
+PyQt5>=5.15.0
+
+# Real-time Visualization
+pyqtgraph>=0.13.0
+numpy>=1.21.0
+
+# System Monitoring
+psutil>=5.8.0
+
+# ROS2 Data Handling
+PyYAML>=5.4.0
+
+# Network Upload System
+requests>=2.25.0
+Flask>=2.0.0
+flask-cors>=3.0.10
+flask-limiter>=2.0.0  # Rate limiting for production server (optional)
+
+# Note: ROS2 (Humble, Iron, or Rolling) must be installed separately
+# Source your ROS2 installation before running:
+# source /opt/ros/<your_distro>/setup.bash

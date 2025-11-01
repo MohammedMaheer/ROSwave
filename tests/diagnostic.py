@@ -81,7 +81,7 @@ class DiagnosticWindow(QMainWindow):
             start = time.time()
             # This should NOT block - it has timeouts
             try:
-                topics = manager.list_topics(timeout=2.0)
+                topics = manager.get_topics_info()  # Fixed: use get_topics_info() instead of list_topics()
                 elapsed = time.time() - start
                 self.log(f"  ✓ Listed topics in {elapsed:.2f}s ({len(topics) if topics else 0} topics)")
             except Exception as te:

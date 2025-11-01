@@ -2,7 +2,9 @@
 
 An offline-first desktop application for recording and monitoring ROS2 bag files with live metrics and advanced ROS2 features.
 
-> **📚 Complete Documentation:** See the [`docs/`](docs/) folder for detailed guides, optimization notes, and production deployment instructions.
+> **📚 Documentation:** See [`docs/`](docs/) for detailed guides | **🧪 Tests:** See [`tests/`](tests/) for testing utilities | **⚙️ Config:** See [`config/`](config/) for configuration files
+
+> **🚀 Quick Start:** See [`docs/QUICK_START_V2.2.md`](docs/QUICK_START_V2.2.md) for immediate usage guide
 
 ## 👤 Project Developer
 
@@ -554,28 +556,89 @@ python3 main.py
 
 **📖 Full Documentation:** See [`docs/PRODUCTION_DEPLOYMENT_GUIDE.md`](docs/PRODUCTION_DEPLOYMENT_GUIDE.md) for SSL setup, rate limiting configuration, and production deployment.
 
-## Project Structure
+## 📁 Project Structure
 
 ```
-ros2_dashboard/
-├── main.py                      # Application entry point
-├── upload_server.py            # Production Flask server (v2.0 with SSL/compression)
-├── setup.sh                     # Quick setup script
-├── requirements.txt             # Python dependencies
-├── README.md                    # This file
-├── gui/                         # GUI components
+ros2bags_live_recording-and-status-dashboard/
+├── main.py                          # Application entry point
+├── upload_server.py                 # Production Flask server (v2.2 with SSL/compression)
+├── setup.sh                         # Quick setup script
+├── start_dashboard.sh               # Dashboard launcher
+├── run_stable.sh                    # Stable mode launcher
+├── requirements.txt                 # Python dependencies
+├── README.md                        # This file (main documentation)
+│
+├── gui/                             # 🎨 GUI Components
 │   ├── __init__.py
-│   ├── main_window.py          # Main application window with tabs
-│   ├── topic_monitor.py        # Topic list and monitoring
-│   ├── node_monitor.py         # ROS2 node monitoring
-│   ├── service_monitor.py      # Service discovery
-│   ├── topic_echo.py           # Live topic message viewer
-│   ├── recording_control.py    # Recording controls
-│   ├── metrics_display.py      # Metrics visualization
-│   ├── advanced_stats.py       # System and ROS2 statistics
-│   └── network_upload.py       # Network upload monitoring & control
-├── core/                        # Core functionality
+│   ├── main_window.py              # Main application window (11 tabs)
+│   ├── topic_monitor.py            # Topic list and monitoring
+│   ├── node_monitor.py             # ROS2 node monitoring
+│   ├── service_monitor.py          # Service discovery
+│   ├── topic_echo.py               # Live topic message viewer
+│   ├── bag_playback.py             # Bag playback controls ⭐ NEW
+│   ├── recording_control.py        # Recording controls
+│   ├── metrics_display.py          # Metrics visualization
+│   ├── advanced_stats.py           # System and ROS2 statistics
+│   ├── live_charts.py              # Real-time performance charts
+│   ├── network_upload.py           # Network upload monitoring
+│   ├── network_robots.py           # Network robot discovery
+│   ├── recording_templates.py      # Recording presets
+│   ├── themes.py                   # Theme management
+│   └── performance_settings_dialog.py  # Performance tuning
+│
+├── core/                            # ⚙️ Core Functionality
 │   ├── __init__.py
+│   ├── ros2_manager.py             # ROS2 integration and bag recording
+│   ├── async_worker.py             # Non-blocking async operations
+│   ├── metrics_collector.py        # Metrics collection and calculation
+│   ├── network_manager.py          # Offline-first upload system
+│   ├── network_discovery.py        # Network robot discovery
+│   ├── ml_exporter.py              # ML dataset packaging
+│   ├── memory_monitor.py           # Memory monitoring & OOM prevention ⭐ NEW
+│   ├── health_check.py             # Startup validation system ⭐ NEW
+│   ├── freeze_prevention.py        # UI freeze prevention
+│   ├── system_detection.py         # System specs detection
+│   ├── performance_modes.py        # Adaptive performance settings
+│   ├── performance_profiler.py     # Performance monitoring
+│   └── recording_triggers.py       # Smart recording automation
+│
+├── docs/                            # 📚 Documentation (40+ guides)
+│   ├── README.md                   # Documentation index
+│   ├── QUICK_START_V2.2.md         # Quick start guide ⭐ NEW
+│   ├── NEXT_STEPS.md               # What to do next ⭐ NEW
+│   ├── COMPREHENSIVE_OPTIMIZATION_NOV2025.md  # Full optimization guide ⭐ NEW
+│   ├── FINAL_SUMMARY_NOV2025.md    # Implementation summary ⭐ NEW
+│   ├── PRODUCTION_DEPLOYMENT_GUIDE.md  # SSL, rate limiting, production
+│   ├── PRODUCTION_FEATURES_QUICK_REF.md  # Quick reference
+│   ├── DOCUMENTATION_INDEX.md      # Complete documentation index
+│   ├── PERFORMANCE_OPTIMIZATION_FINAL.md  # Performance tuning
+│   ├── IMPLEMENTATION_SUMMARY.md   # Feature implementation
+│   ├── NETWORKING.md               # Network upload system details
+│   ├── RELEASE_NOTES.md            # Version history
+│   └── ...                         # 30+ additional guides
+│
+├── tests/                           # 🧪 Test Suite & Utilities
+│   ├── README.md                   # Test documentation
+│   ├── test_installation.py        # Installation verification
+│   ├── test_ml_export.py           # ML export tests
+│   ├── test_performance_optimizations.py  # Performance tests
+│   ├── test_topic_rates.py         # Topic rate testing
+│   ├── diagnostic.py               # System diagnostic tool ⭐ MOVED
+│   ├── diagnostic_nogui.py         # Non-GUI diagnostic
+│   ├── demo_topics_generator.py    # Demo topic publisher
+│   ├── verify_*.py                 # Verification scripts
+│   └── test_*.py                   # Various test files
+│
+├── config/                          # ⚙️ Configuration Files ⭐ NEW
+│   └── robot_*.json                # Robot configuration files
+│
+└── ml_datasets/                     # 🤖 ML Export Directory
+    └── recording_*/                # Auto-generated ML packages
+        ├── raw/                    # Original bag files
+        ├── metadata.json           # Recording metadata
+        ├── schema.json             # Topic schema
+        └── *.tar.gz                # Compressed archive
+```
 │   ├── ros2_manager.py         # ROS2 integration and bag recording
 │   ├── metrics_collector.py    # Metrics collection and calculation
 │   ├── network_manager.py      # Offline-first upload system with timeouts

@@ -194,6 +194,11 @@ class MainWindow(QMainWindow):
         self.visibility_tracker.visibility_changed.connect(self._on_window_visibility_changed)
         self._timers_paused = False
         
+        # ADVANCED: Window state tracking for intelligent frame skipping
+        self._window_minimized = False
+        self._window_hidden = False
+        self._skip_frame_updates = False
+        
         # DEBOUNCING - prevent excessive updates
         self._last_ros2_update = 0
         self._ros2_update_cooldown = 1.0  # At least 1 second between updates
@@ -804,23 +809,46 @@ class MainWindow(QMainWindow):
             self.tray_icon.showMessage(title, message, icon, 3000)  # 3 second duration
         
     def _warmup_cache(self):
-        """Warm up async cache in background - prevents first-call freezes"""
-        print("🔥 Warming up cache in background...")
+        """
+        ADVANCED: Smart cache preloading with predictive loading
+        - Warms up cache in background to prevent first-call freezes
+        - Predicts likely user actions and preloads data
+        - Staggered loading to avoid overwhelming system
+        """
+        print("🔥 Warming up cache with predictive preloading...")
         
         # Trigger async cache population (non-blocking)
         # These will populate the cache so future UI updates are instant
         def _noop(data):
-            print(f"✅ Cache warmed: {len(data) if isinstance(data, list) else 'data'} items")
+            count = len(data) if isinstance(data, list) else 'data'
+            print(f"✅ Cache warmed: {count} items")
         
         try:
             if self.async_ros2:
-                # Queue async operations without blocking
+                # PRIORITY 1: Topics (most frequently accessed)
                 self.async_ros2.get_topics_async(_noop)
-                # Stagger the calls to avoid overwhelming system
+                
+                # PRIORITY 2: Nodes (second most common)
                 QTimer.singleShot(500, lambda: self.async_ros2.get_nodes_async(_noop) if self.async_ros2 else None)
+                
+                # PRIORITY 3: Services (less frequently accessed)
                 QTimer.singleShot(1000, lambda: self.async_ros2.get_services_async(_noop) if self.async_ros2 else None)
+                
+                # ADVANCED: Preload system metrics (user likely to check)
+                QTimer.singleShot(1500, self._preload_system_metrics)
+                
         except Exception as e:
             print(f"⚠️ Cache warmup error: {e}")
+    
+    def _preload_system_metrics(self):
+        """Predictively preload system metrics into cache"""
+        try:
+            # Trigger metrics collection in background
+            if hasattr(self, 'metrics_collector'):
+                self.metrics_collector.get_live_metrics(self.ros2_manager)
+                print("✅ System metrics preloaded")
+        except Exception as e:
+            print(f"⚠️ Metrics preload error: {e}")
             
     def init_network_manager(self):
         """Initialize network manager after UI is ready"""
@@ -848,6 +876,10 @@ class MainWindow(QMainWindow):
         """
         import time
         
+        # ADVANCED: Skip if window is minimized (intelligent frame skipping)
+        if self._skip_frame_updates or self._window_minimized:
+            return
+        
         # Skip if window is hidden (prevents background work)
         if not self.isVisible():
             return
@@ -856,9 +888,12 @@ class MainWindow(QMainWindow):
         if hasattr(self, '_ros2_update_active') and self._ros2_update_active:
             return
         
+        # ADAPTIVE: Slow down updates when not recording (save CPU)
+        cooldown = 2.0 if not self.ros2_manager.is_recording else 1.0
+        
         # Skip if updated too recently (debounce)
         current_time = time.time()
-        if current_time - self._last_ros2_update < 2.0:  # Min 2 seconds between updates
+        if current_time - self._last_ros2_update < cooldown:
             return
         self._last_ros2_update = current_time
         self._ros2_update_active = True
@@ -879,13 +914,19 @@ class MainWindow(QMainWindow):
     
     def update_metrics_smart(self):
         """
-        OPTIMIZED: Only update metrics if visible + CPU BACKOFF
+        OPTIMIZED: Only update metrics if visible + CPU BACKOFF + ADAPTIVE INTERVALS
         
+        - Skip if window minimized (intelligent frame skipping)
         - Skip if window hidden
         - Skip if already updating
         - AGGRESSIVE backoff if CPU > 80%
         - Skip cycles if CPU > 90%
+        - ADAPTIVE: Faster updates when recording, slower when idle
         """
+        # ADVANCED: Skip if window minimized
+        if self._skip_frame_updates or self._window_minimized:
+            return
+        
         # Skip if window is hidden
         if not self.isVisible():
             return
@@ -1448,3 +1489,42 @@ class MainWindow(QMainWindow):
         print("=" * 60 + "\n")
         
         event.accept()
+    
+    def changeEvent(self, event):
+        """
+        ADVANCED OPTIMIZATION: Intelligent frame skipping
+        Pause UI updates when window is minimized to save CPU
+        """
+        if event.type() == QEvent.WindowStateChange:
+            if self.isMinimized():
+                # Window minimized - pause non-critical updates
+                self._window_minimized = True
+                self._skip_frame_updates = True
+                print("🔽 Window minimized - pausing UI updates (recording continues)")
+                self._pause_timers_intelligently()
+            else:
+                # Window restored - resume updates
+                self._window_minimized = False
+                self._skip_frame_updates = False
+                print("🔼 Window restored - resuming UI updates")
+                self._resume_timers_intelligently()
+        
+        super().changeEvent(event)
+    
+    def _pause_timers_intelligently(self):
+        """Pause UI-only timers when window is minimized"""
+        # Pause ROS2 and metrics timers (UI display only)
+        if hasattr(self, 'ros2_timer') and self.ros2_timer:
+            self.ros2_timer.stop()
+        if hasattr(self, 'metrics_timer') and self.metrics_timer:
+            self.metrics_timer.stop()
+        
+        # Keep history timer running (background operation)
+        # Recording continues independently
+    
+    def _resume_timers_intelligently(self):
+        """Resume timers when window is restored"""
+        if hasattr(self, 'ros2_timer') and self.ros2_timer:
+            self.ros2_timer.start()
+        if hasattr(self, 'metrics_timer') and self.metrics_timer:
+            self.metrics_timer.start()

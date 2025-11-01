@@ -27,6 +27,10 @@ class MetricsCollector:
         # Thread safety
         self._lock = threading.Lock()
         
+        # ADVANCED: Batch processing - collect multiple metrics in single pass
+        self._batch_mode = False
+        self._pending_updates = []
+        
         self.metrics: Dict[str, Union[int, float]] = {
             'duration': 0.0,
             'size_mb': 0.0,
