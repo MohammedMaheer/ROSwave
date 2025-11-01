@@ -78,6 +78,17 @@ class HzMonitorThread(QThread):
     def _get_hz_for_topic(self, topic_name):
         """Get Hz for a single topic with timeout"""
         try:
+            # Use the advanced hz_monitor if available (much more accurate)
+            if hasattr(self.ros2_manager, 'hz_monitor') and self.ros2_manager.hz_monitor:
+                result = self.ros2_manager.hz_monitor.get_hz_smart(topic_name, use_cache=True)
+                # get_hz_smart returns (hz, confidence) tuple - extract just the hz value
+                if isinstance(result, tuple):
+                    hz = result[0]
+                else:
+                    hz = result
+                return hz
+            
+            # Fallback to old method if advanced monitor not available
             result = subprocess.run(
                 ['ros2', 'topic', 'hz', topic_name],
                 capture_output=True,
@@ -518,8 +529,14 @@ class RecordingControlWidget(QWidget):
         """Callback when Hz monitor thread updates publishing rates"""
         try:
             # Update rates for topics from background Hz monitor
-            for topic_name, hz in hz_rates.items():
+            for topic_name, hz_value in hz_rates.items():
                 if topic_name in self.selected_topics_data:
+                    # Handle tuple returns from advanced monitor (hz, confidence)
+                    if isinstance(hz_value, tuple):
+                        hz = hz_value[0]
+                    else:
+                        hz = hz_value
+                    
                     data = self.selected_topics_data[topic_name]
                     data['last_rate'] = data['rate']
                     data['rate'] = hz

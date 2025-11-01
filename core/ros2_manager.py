@@ -74,9 +74,17 @@ class ROS2Manager:
         
         # ADVANCED: Topic Hz monitoring with adaptive timeouts and background updates
         if ADVANCED_HZ_MONITOR_AVAILABLE and TopicHzMonitor is not None:
-            self.hz_monitor = TopicHzMonitor(max_workers=8)
-            self.hz_monitor.start_background_monitoring(interval=15.0)  # Update every 15s
-            print("✅ Advanced Hz monitor enabled (adaptive + background updates)")
+            # Get Hz monitor settings from performance mode
+            hz_settings = self._get_hz_monitor_settings()
+            workers = hz_settings.get('hz_monitor_workers', 8)
+            
+            self.hz_monitor = TopicHzMonitor(max_workers=workers, settings=hz_settings)
+            
+            # Start background monitoring with dynamic interval
+            bg_interval = hz_settings.get('hz_background_interval', 15.0)
+            self.hz_monitor.start_background_monitoring(interval=bg_interval)
+            
+            print(f"✅ Advanced Hz monitor enabled (workers={workers}, interval={bg_interval}s)")
         else:
             self.hz_monitor = None
         
@@ -105,6 +113,25 @@ class ROS2Manager:
         except Exception:
             # Fallback to fast timeout
             return 3.0
+    
+    def _get_hz_monitor_settings(self):
+        """Get Hz monitor settings from performance mode"""
+        if not self.performance_mode_manager:
+            return {}
+        
+        try:
+            mode_settings = self.performance_mode_manager.get_mode_settings()
+            # Extract Hz-specific settings
+            return {
+                'hz_monitor_workers': mode_settings.get('hz_monitor_workers', 8),
+                'hz_quick_timeout': mode_settings.get('hz_quick_timeout', 2.5),
+                'hz_max_timeout': mode_settings.get('hz_max_timeout', 10.0),
+                'hz_background_interval': mode_settings.get('hz_background_interval', 15.0),
+                'hz_cache_fresh_age': mode_settings.get('hz_cache_fresh_age', 5.0),
+                'hz_cache_stale_age': mode_settings.get('hz_cache_stale_age', 30.0),
+            }
+        except Exception:
+            return {}
     
     def update_subprocess_timeout(self):
         """Update subprocess timeout (call this if performance mode changes)"""

@@ -121,6 +121,14 @@ class PerformanceModeManager(QObject):
                 'max_threads': 8,                  # Many parallel operations
                 'max_concurrent_threads': 5,       # Allow many concurrent ops
                 
+                # Hz Monitor settings - FASTEST DETECTION
+                'hz_monitor_workers': 12,          # Maximum parallel Hz measurements
+                'hz_quick_timeout': 2.0,           # Fast quick checks
+                'hz_max_timeout': 8.0,             # Reasonable max for slow topics
+                'hz_background_interval': 10.0,    # Frequent background updates
+                'hz_cache_fresh_age': 3.0,         # Very fresh cache
+                'hz_cache_stale_age': 20.0,        # Refresh often
+                
                 # Cache settings (seconds) - BALANCED FOR SPEED
                 'cache_timeout': 3,                # 3 seconds - balance freshness/speed
                 'system_metrics_cache': 0.3,       # 300ms - very fresh metrics
@@ -155,6 +163,14 @@ class PerformanceModeManager(QObject):
                 'max_threads': 4,                  # More parallelism = faster
                 'max_concurrent_threads': 3,       # Allow 3 concurrent operations
                 
+                # Hz Monitor settings - BALANCED SPEED/ACCURACY
+                'hz_monitor_workers': 8,           # Good parallelism
+                'hz_quick_timeout': 2.5,           # Balanced quick checks
+                'hz_max_timeout': 10.0,            # Longer for slow topics (2 Hz)
+                'hz_background_interval': 15.0,    # Standard background updates
+                'hz_cache_fresh_age': 5.0,         # Fresh cache
+                'hz_cache_stale_age': 30.0,        # Standard refresh
+                
                 # Cache settings (seconds) - AGGRESSIVE CACHING = NO BLOCKING
                 'cache_timeout': 5,                # 5 seconds - Less subprocess calls
                 'system_metrics_cache': 1.0,       # 1.0 second - Reduce psutil overhead dramatically
@@ -188,6 +204,14 @@ class PerformanceModeManager(QObject):
                 # Thread pool settings - MINIMAL CONTENTION
                 'max_threads': 2,                  # Minimal threads
                 'max_concurrent_threads': 1,       # One at a time to avoid CPU thrashing
+                
+                # Hz Monitor settings - CONSERVATIVE
+                'hz_monitor_workers': 4,           # Fewer parallel measurements
+                'hz_quick_timeout': 3.0,           # Longer timeouts for reliability
+                'hz_max_timeout': 12.0,            # Extra time for slow topics
+                'hz_background_interval': 20.0,    # Less frequent background updates
+                'hz_cache_fresh_age': 8.0,         # Use cache longer
+                'hz_cache_stale_age': 45.0,        # Keep cache longer
                 
                 # Cache settings (seconds) - MAXIMUM CACHING
                 'cache_timeout': 6,                # 6 seconds - aggressive caching

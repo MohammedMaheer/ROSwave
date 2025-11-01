@@ -23,8 +23,19 @@ class TopicHzMonitor:
     - Per-topic optimization
     """
     
-    def __init__(self, max_workers: int = 8):
-        """Initialize monitor."""
+    def __init__(self, max_workers: int = 8, settings: dict = None):
+        """
+        Initialize monitor.
+        
+        Args:
+            max_workers: Number of parallel workers for Hz measurements
+            settings: Optional dict with performance settings:
+                - hz_quick_timeout: Timeout for quick checks (default: 2.5)
+                - hz_max_timeout: Maximum timeout for slow topics (default: 10.0)
+                - hz_cache_fresh_age: Age for fresh cache (default: 5.0)
+                - hz_cache_stale_age: Age for stale cache (default: 30.0)
+                - hz_background_interval: Background monitoring interval (default: 15.0)
+        """
         self.max_workers = max_workers
         self._hz_cache = {}
         self._cache_lock = threading.Lock()
@@ -33,12 +44,22 @@ class TopicHzMonitor:
         self._topics_to_monitor = set()  # Topics for background monitoring
         self._monitoring_active = False  # Flag for background monitoring state
         
-        # Timeout constants - increased for better slow topic support
-        self.QUICK_TIMEOUT = 2.5    # For initial quick checks (was 1.5)
-        self.MIN_TIMEOUT = 2.0      # Minimum timeout
-        self.MAX_TIMEOUT = 10.0     # Maximum timeout for very slow topics (was 6.0)
-        self.CACHE_FRESH_AGE = 5.0  # Cache considered "fresh"
-        self.CACHE_STALE_AGE = 30.0 # Cache considered "stale"
+        # Apply settings from performance mode or use defaults
+        if settings:
+            self.QUICK_TIMEOUT = settings.get('hz_quick_timeout', 2.5)
+            self.MAX_TIMEOUT = settings.get('hz_max_timeout', 10.0)
+            self.CACHE_FRESH_AGE = settings.get('hz_cache_fresh_age', 5.0)
+            self.CACHE_STALE_AGE = settings.get('hz_cache_stale_age', 30.0)
+            self._background_interval = settings.get('hz_background_interval', 15.0)
+        else:
+            # Default timeout constants - balanced for mid-range systems
+            self.QUICK_TIMEOUT = 2.5    # For initial quick checks
+            self.MAX_TIMEOUT = 10.0     # Maximum timeout for very slow topics
+            self.CACHE_FRESH_AGE = 5.0  # Cache considered "fresh"
+            self.CACHE_STALE_AGE = 30.0 # Cache considered "stale"
+            self._background_interval = 15.0  # Background monitoring interval
+        
+        self.MIN_TIMEOUT = 2.0      # Minimum timeout (always same)
         
     def get_hz_smart(self, topic_name: str, use_cache: bool = True) -> Tuple[float, str]:
         """
