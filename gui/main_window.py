@@ -152,6 +152,9 @@ class HistoryWorker(QRunnable):
 class MainWindow(QMainWindow):
     """Main application window"""
     
+    # Signal for showing critical memory dialog from background thread
+    critical_memory_signal = pyqtSignal(float)
+    
     def __init__(self):
         super().__init__()
         
@@ -200,6 +203,10 @@ class MainWindow(QMainWindow):
         # Set up memory callbacks
         self.memory_monitor.set_warning_callback(self.on_memory_warning)
         self.memory_monitor.set_critical_callback(self.on_memory_critical)
+        
+        # Connect critical memory signal to show dialog on main thread
+        self.critical_memory_signal.connect(self._show_critical_memory_dialog)
+        
         self.memory_monitor.start()
         
         # ANTI-FREEZE: Prevent concurrent ROS2 updates
@@ -1410,14 +1417,18 @@ class MainWindow(QMainWindow):
         self.update_status(f"⚠️  High memory usage ({percent:.1f}%) - optimizing...")
     
     def on_memory_critical(self, percent):
-        """Handle critical memory - aggressive cleanup"""
+        """Handle critical memory - aggressive cleanup (called from background thread)"""
         print(f"🚨 CRITICAL memory: {percent:.1f}% used - emergency cleanup")
         self.memory_optimizer.emergency_cleanup()
         
-        # Show critical warning
+        # Show critical warning in status bar (thread-safe)
         self.update_status(f"🚨 CRITICAL memory ({percent:.1f}%) - cleaned caches")
         
-        # Optionally show dialog to user
+        # Emit signal to show dialog on main GUI thread (Qt requirement)
+        self.critical_memory_signal.emit(percent)
+    
+    def _show_critical_memory_dialog(self, percent):
+        """Show critical memory dialog (called on main GUI thread via signal)"""
         from PyQt5.QtWidgets import QMessageBox
         QMessageBox.warning(
             self,

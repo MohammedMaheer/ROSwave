@@ -586,32 +586,11 @@ class LiveChartsWidget(QWidget):
             'disk_write_speed': float(metrics.get('disk_write_speed', 0) or 0)
         }
         
-        # Check CPU for adaptive throttling USING DYNAMIC THRESHOLDS
-        cpu_now = metrics_safe['cpu_percent']
-        if cpu_now > self.cpu_backoff_critical:
-            # Skip entire cycle if CPU critically high (dynamic threshold)
-            return
-        elif cpu_now > self.cpu_backoff_high:
-            # Increase the update interval during high CPU (dynamic threshold and multiplier)
-            try:
-                backoff_interval = int(self.update_interval * self.cpu_interval_multiplier)
-                self.update_timer.setInterval(min(backoff_interval, 5000))
-            except Exception:
-                pass
-            return
-        else:
-            # Restore normal interval
-            try:
-                if self.update_timer.interval() != self.update_interval:
-                    self.update_timer.setInterval(self.update_interval)
-            except Exception:
-                pass
-        
         # Initialize start time if first update
         if self.start_time is None:
             self.start_time = datetime.now()
         
-        # Calculate elapsed time and append to buffers
+        # ALWAYS append data to buffers - never skip this to avoid stuck charts
         elapsed = (datetime.now() - self.start_time).total_seconds()
         self.time_data.append(elapsed)
         self.msg_rate_data.append(metrics_safe['message_rate'])
@@ -620,6 +599,25 @@ class LiveChartsWidget(QWidget):
         self.cpu_data.append(metrics_safe['cpu_percent'])
         self.memory_data.append(metrics_safe['memory_percent'])
         self.disk_write_data.append(metrics_safe['disk_write_speed'])
+        
+        # Check CPU for adaptive throttling USING DYNAMIC THRESHOLDS
+        # IMPORTANT: We still collect data above, just skip plotting when CPU is high
+        cpu_now = metrics_safe['cpu_percent']
+        skip_plotting = False
+        
+        if cpu_now > self.cpu_backoff_critical:
+            # Skip plotting if CPU critically high, but KEEP collecting data
+            skip_plotting = True
+        elif cpu_now > self.cpu_backoff_high:
+            # Skip plotting during high CPU, but KEEP collecting data
+            skip_plotting = True
+            # Optionally reduce update frequency (but don't change interval mid-flight)
+            # Commenting this out to prevent timer interval changes that cause stuck charts
+            # try:
+            #     backoff_interval = int(self.update_interval * self.cpu_interval_multiplier)
+            #     self.update_timer.setInterval(min(backoff_interval, 5000))
+            # except Exception:
+            #     pass
         
         # Fetch topic count in background only if not under load
         try:
@@ -633,7 +631,11 @@ class LiveChartsWidget(QWidget):
         except Exception:
             pass
         
-        # PLOT UPDATE
+        # PLOT UPDATE - skip if CPU is too high (but we already collected data above)
+        if skip_plotting:
+            # Don't update plots during high CPU, but data is still being collected
+            return
+        
         if need_plot_update:
             # CRITICAL FIX: Allow charts with even 1 data point (was requiring 2)
             if len(self.time_data) < 1:
