@@ -579,16 +579,36 @@ class LiveChartsWidget(QWidget):
             
     def reset(self):
         """Reset for new recording session - clears data and resets state"""
-        self.clear_charts()
-        self.start_time = None  # CRITICAL: Reset start time for new session
+        # Clear data buffers (always safe)
+        self.time_data.clear()
+        self.msg_rate_data.clear()
+        self.bandwidth_data.clear()
+        self.topic_count_data.clear()
+        self.cpu_data.clear()
+        self.memory_data.clear()
+        self.disk_write_data.clear()
+        self.start_time = None
         self.update_counter = 0
         self.paused = not self.auto_pause  # Reset to default auto-pause state
-        self.pause_btn.setText("⏸ Pause")
-        self.status_label.setText("📊 Monitoring Active")
-        self.status_label.setStyleSheet("color: #4CAF50; font-weight: bold;")
-        # Clear statistics
-        for key in self.stats_labels:
-            self.stats_labels[key].setText("0")
+        
+        # Only update UI elements if they're already loaded (lazy loading)
+        if self._charts_loaded:
+            # Update plots with empty data
+            self.msg_rate_plot.curve.setData([], [])
+            self.bandwidth_plot.curve.setData([], [])
+            self.topic_count_plot.curve.setData([], [])
+            self.cpu_plot.curve.setData([], [])
+            self.memory_plot.curve.setData([], [])
+            self.disk_write_plot.curve.setData([], [])
+            
+            # Update button and labels
+            self.pause_btn.setText("⏸ Pause")
+            self.status_label.setText("📊 Monitoring Active")
+            self.status_label.setStyleSheet("color: #4CAF50; font-weight: bold;")
+            
+            # Clear statistics
+            for key in self.stats_labels:
+                self.stats_labels[key].setText("0")
         
     def clear_charts(self):
         """Clear all chart data"""
