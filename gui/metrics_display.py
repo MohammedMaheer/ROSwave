@@ -93,8 +93,8 @@ class MetricsDisplayWidget(QWidget):
         
         row += 1
         
-        # Average message rate
-        rate_label = QLabel("Avg Rate:")
+        # Current message rate (real-time)
+        rate_label = QLabel("Current Rate:")
         rate_label.setFont(label_font)
         group_layout.addWidget(rate_label, row, 0)
         

@@ -436,8 +436,8 @@ class ROS2Manager:
                     cpu_percent = process.cpu_percent(interval=0)  # Non-blocking
                     memory_mb = process.memory_info().rss / 1024 / 1024
                     
-                    # Log health every 30 checks (~1 minute)
-                    if self.recording_health_checks % 30 == 0:
+                    # Log health every 10 checks (~20 seconds) instead of 30
+                    if self.recording_health_checks % 10 == 0:
                         elapsed = time.time() - (self.recording_start_time or time.time())
                         
                         # Show ACTUAL recording activity (bag size and write speed)
@@ -446,9 +446,10 @@ class ROS2Manager:
                                   f"Size={current_size_mb:.1f}MB, Write={write_speed_mb_s:.2f}MB/s, "
                                   f"PID={self.recording_process.pid}")
                         else:
-                            # Fallback to process stats if bag size not available
+                            # Show path info to debug why bag file not found
                             print(f"📊 Recording health: {elapsed:.0f}s elapsed, "
-                                  f"CPU={cpu_percent:.1f}%, MEM={memory_mb:.1f}MB, "
+                                  f"Bag path: {self.current_bag_path}, "
+                                  f"Exists: {os.path.exists(self.current_bag_path) if self.current_bag_path else False}, "
                                   f"PID={self.recording_process.pid}")
                     
                     # Warn if recording process is using excessive resources
