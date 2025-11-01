@@ -156,61 +156,36 @@ class DemoTopicPublisher(Node):
 
 
 def main():
-    """Main function - create 30 demo topics"""
+    """Main function - create 10 demo topics"""
     rclpy.init()
     
     print("=" * 80)
-    print("ROS2 DEMO TOPICS GENERATOR - Starting 30 Concurrent Test Topics")
+    print("ROS2 DEMO TOPICS GENERATOR - Starting 10 Concurrent Test Topics")
     print("=" * 80)
     
-    # Define 30 demo topics with different message types and rates
+    # Define 10 demo topics with different message types and rates
     demo_topics = [
         # Sensor data (high frequency)
-        ("/sensor/lidar_front", LaserScan, 10.0),
-        ("/sensor/lidar_rear", LaserScan, 10.0),
-        ("/sensor/camera_front/image", String, 30.0),  # Using String as placeholder for Image
-        ("/sensor/camera_back/info", CameraInfo, 5.0),
-        ("/sensor/imu/data", Imu, 100.0),
-        ("/sensor/imu/mag", String, 50.0),
+        ("/sensor/lidar", LaserScan, 10.0),
+        ("/sensor/camera/info", CameraInfo, 5.0),
+        ("/sensor/imu", Imu, 50.0),
         
         # Motor/Drive commands
         ("/motor/left_wheel", Float64, 20.0),
         ("/motor/right_wheel", Float64, 20.0),
-        ("/motor/arm_joint1", Float64, 15.0),
-        ("/motor/arm_joint2", Float64, 15.0),
-        ("/motor/arm_joint3", Float64, 15.0),
-        ("/motor/gripper", Float64, 10.0),
         
         # Navigation/Odometry
-        ("/odometry/filtered", Odometry, 50.0),
-        ("/odometry/imu_only", Odometry, 30.0),
-        ("/tf", String, 50.0),  # Placeholder
+        ("/odometry/filtered", Odometry, 30.0),
         
         # Control commands
         ("/cmd_vel", Twist, 10.0),
-        ("/cmd_vel_smooth", Twist, 20.0),
-        ("/pose_command", Pose, 5.0),
-        
-        # Environmental data
-        ("/battery/state", String, 1.0),
-        ("/battery/voltage", Float64, 2.0),
-        ("/system/temperature", Float64, 5.0),
-        ("/system/cpu_load", Float64, 2.0),
         
         # Status/Diagnostics
         ("/status/heartbeat", Bool, 5.0),
-        ("/status/mode", String, 2.0),
-        ("/diagnostics", String, 1.0),
-        ("/diagnostics/agg", String, 1.0),
+        ("/battery/voltage", Float64, 2.0),
         
-        # Environmental sensors
-        ("/weather/temperature", Float64, 1.0),
-        ("/weather/pressure", Float64, 1.0),
-        ("/weather/humidity", String, 1.0),
-        
-        # Additional demo topics
+        # Debug
         ("/debug/info", String, 5.0),
-        ("/debug/timing", Float64, 10.0),
     ]
     
     # Create all publishers
