@@ -327,7 +327,9 @@ class LiveChartsWidget(QWidget):
             if hasattr(self, 'update_timer') and not self.paused:
                 self.update_timer.start(self.update_interval)
                 if hasattr(self, 'status_label'):
-                    self.status_label.setText("📊 Monitoring Active")
+                    # Show data collection status
+                    self.status_label.setText("📊 Collecting data... (wait 3-5 seconds)")
+                    self.status_label.setStyleSheet("color: #FF9800; font-weight: bold;")
             
         except Exception as e:
             print(f"❌ Error loading charts: {e}")
@@ -623,7 +625,8 @@ class LiveChartsWidget(QWidget):
         
         # PLOT UPDATE
         if need_plot_update:
-            if len(self.time_data) < 2:
+            # CRITICAL FIX: Allow charts with even 1 data point (was requiring 2)
+            if len(self.time_data) < 1:
                 return
             
             try:
@@ -662,10 +665,16 @@ class LiveChartsWidget(QWidget):
         # STATISTICS UPDATE
         if need_stats_update:
             self.update_statistics()
+            
+            # Update status label to show data is flowing
+            if hasattr(self, 'status_label') and len(self.time_data) > 10:
+                self.status_label.setText(f"📊 Monitoring Active ({len(self.time_data)} points)")
+                self.status_label.setStyleSheet("color: #4CAF50; font-weight: bold;")
         
     def update_statistics(self):
         """Update statistics panel - LIGHTWEIGHT"""
-        if len(self.msg_rate_data) < 2:
+        # CRITICAL FIX: Show stats even with 1 data point (was requiring 2)
+        if len(self.msg_rate_data) < 1:
             return
         
         try:

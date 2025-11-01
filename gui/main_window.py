@@ -82,11 +82,27 @@ class MetricsWorker(QRunnable):
     def run(self):
         """Perform the heavy metrics update in a worker thread."""
         try:
+            # CRITICAL FIX: Always update and get full metrics
+            # get_live_metrics() only returns system metrics (CPU, RAM), not recording data!
+            # We need get_metrics() to show recording stats (msg rate, bandwidth, etc.)
             if self.is_recording:
+                # During recording: update accumulates data from current recording
                 self.metrics_collector.update(self.ros2_manager)
-                metrics = self.metrics_collector.get_metrics()
-            else:
-                metrics = self.metrics_collector.get_live_metrics(self.ros2_manager)
+            
+            # ALWAYS get full metrics (includes recording data when available)
+            metrics = self.metrics_collector.get_metrics()
+            
+            # Enrich with live system metrics (CPU, memory, disk)
+            live_metrics = self.metrics_collector.get_live_metrics(self.ros2_manager)
+            if live_metrics:
+                # Merge system metrics into recording metrics
+                metrics.update({
+                    'cpu_percent': live_metrics.get('cpu_percent', 0),
+                    'memory_percent': live_metrics.get('memory_percent', 0),
+                    'disk_usage_percent': live_metrics.get('disk_usage_percent', 0),
+                    'disk_write_speed': live_metrics.get('disk_write_speed', 0)
+                })
+            
             self.signals.finished.emit(metrics)
         except Exception as exc:  # pragma: no cover - defensive guard
             self.signals.error.emit(str(exc))
