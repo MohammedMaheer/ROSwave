@@ -37,6 +37,14 @@ try:
 except Exception:
     CPU_OPTIMIZER_AVAILABLE = False
 
+# Import recording protection system
+try:
+    from .recording_protection import RecordingMonitor
+    RECORDING_PROTECTION_AVAILABLE = True
+except Exception:
+    RECORDING_PROTECTION_AVAILABLE = False
+    RecordingMonitor = None
+
 
 class ROS2Manager:
     """Manages ROS2 bag recording and topic information - AGGRESSIVE OPTIMIZATION"""
@@ -71,6 +79,13 @@ class ROS2Manager:
         self.recording_health_checks = 0
         self.recording_warnings = []
         self._subprocess_timeout = self._calculate_subprocess_timeout()
+        
+        # 🛡️ RECORDING PROTECTION SYSTEM
+        if RECORDING_PROTECTION_AVAILABLE and RecordingMonitor:
+            self.recording_monitor = RecordingMonitor()
+            print("✅ Recording protection system initialized")
+        else:
+            self.recording_monitor = None
         
         # ADVANCED: Topic Hz monitoring with adaptive timeouts and background updates
         if ADVANCED_HZ_MONITOR_AVAILABLE and TopicHzMonitor is not None:
@@ -483,6 +498,12 @@ class ROS2Manager:
             self.recording_health_checks = 0
             self.recording_warnings = []
             
+            # 🛡️ ACTIVATE RECORDING PROTECTION
+            if self.recording_monitor:
+                self.recording_monitor.protector.set_recording_process(self.recording_process)
+                self.recording_monitor.on_recording_start()
+                print("🛡️  Recording protection activated")
+            
             # Start LIGHTWEIGHT monitoring thread (does NOT block recording)
             self.recording_thread = threading.Thread(
                 target=self._monitor_recording,
@@ -624,6 +645,11 @@ class ROS2Manager:
             
         print("🛑 Stopping recording...")
         self.is_recording = False
+        
+        # 🛡️ DEACTIVATE RECORDING PROTECTION
+        if self.recording_monitor:
+            self.recording_monitor.on_recording_stop()
+            print("🛡️  Recording protection deactivated")
         
         bag_path_to_package = self.current_bag_path
 
