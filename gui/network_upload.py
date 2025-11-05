@@ -7,10 +7,16 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget,  #
                              QLabel, QLineEdit, QCheckBox, QProgressBar, QSpinBox,
                              QMessageBox, QFileDialog)
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal  # type: ignore
-from PyQt5.QtGui import QColor, QFont  # type: ignore
+from PyQt5.QtGui import QColor, QFont, QTextCursor  # type: ignore
 from datetime import datetime
 import os
 import time
+
+# Import authentication manager
+try:
+    from core.auth_manager import AuthenticationManager
+except ImportError:
+    AuthenticationManager = None  # Fallback if not available
 
 
 class NetworkUploadWidget(QWidget):
@@ -21,6 +27,10 @@ class NetworkUploadWidget(QWidget):
     def __init__(self, network_manager):
         super().__init__()
         self.network_manager = network_manager
+        
+        # Initialize authentication manager if available
+        self.auth_manager = AuthenticationManager() if AuthenticationManager else None
+        
         self.init_ui()
         
         # Setup update timer
@@ -33,12 +43,17 @@ class NetworkUploadWidget(QWidget):
         layout = QVBoxLayout()
         
         # Network Status Group
-        status_group = QGroupBox("Network Status")
+        status_group = QGroupBox("Network Status & Authentication")
         status_layout = QHBoxLayout()
         
         self.connection_label = QLabel("● Offline")
         self.connection_label.setStyleSheet("color: red; font-weight: bold;")
         status_layout.addWidget(self.connection_label)
+        
+        # Auth status indicator
+        self.auth_status_label = QLabel("🔓 No Auth")
+        self.auth_status_label.setStyleSheet("color: gray; font-weight: bold;")
+        status_layout.addWidget(self.auth_status_label)
         
         status_layout.addStretch()
         
@@ -49,7 +64,15 @@ class NetworkUploadWidget(QWidget):
         status_layout.addWidget(QLabel("Server URL:"))
         status_layout.addWidget(self.server_url_input)
         
-        update_url_btn = QPushButton("Update URL")
+        # API token/key input
+        status_layout.addWidget(QLabel("API Key:"))
+        self.api_key_input = QLineEdit()
+        self.api_key_input.setEchoMode(QLineEdit.Password)
+        self.api_key_input.setPlaceholderText("Optional API token (if auth enabled)")
+        self.api_key_input.setMaximumWidth(200)
+        status_layout.addWidget(self.api_key_input)
+        
+        update_url_btn = QPushButton("Update")
         update_url_btn.clicked.connect(self.update_server_url)
         status_layout.addWidget(update_url_btn)
         
@@ -88,12 +111,25 @@ class NetworkUploadWidget(QWidget):
         self.auto_upload_check.setChecked(True)
         auto_layout.addWidget(self.auto_upload_check)
         
+        # Compression option
+        self.compression_check = QCheckBox("Compress before upload")
+        self.compression_check.setChecked(False)
+        auto_layout.addWidget(self.compression_check)
+        
         auto_layout.addWidget(QLabel("Priority:"))
         self.priority_spin = QSpinBox()
         self.priority_spin.setMinimum(1)
         self.priority_spin.setMaximum(10)
         self.priority_spin.setValue(5)
         auto_layout.addWidget(self.priority_spin)
+        
+        # Max retries
+        auto_layout.addWidget(QLabel("Max Retries:"))
+        self.retries_spin = QSpinBox()
+        self.retries_spin.setMinimum(0)
+        self.retries_spin.setMaximum(10)
+        self.retries_spin.setValue(3)
+        auto_layout.addWidget(self.retries_spin)
         
         auto_layout.addStretch()
         
@@ -102,6 +138,33 @@ class NetworkUploadWidget(QWidget):
         auto_layout.addWidget(manual_upload_btn)
         
         control_layout.addLayout(auto_layout)
+        
+        # Batch upload settings
+        batch_layout = QHBoxLayout()
+        
+        batch_layout.addWidget(QLabel("Batch Upload:"))
+        self.batch_size_spin = QSpinBox()
+        self.batch_size_spin.setMinimum(1)
+        self.batch_size_spin.setMaximum(100)
+        self.batch_size_spin.setValue(5)
+        batch_layout.addWidget(self.batch_size_spin)
+        batch_layout.addWidget(QLabel("bags at a time"))
+        
+        batch_upload_btn = QPushButton("📦 Batch Upload All")
+        batch_upload_btn.clicked.connect(self.batch_upload_all)
+        batch_layout.addWidget(batch_upload_btn)
+        
+        batch_layout.addStretch()
+        
+        control_layout.addLayout(batch_layout)
+        
+        # Metadata tags
+        tags_layout = QHBoxLayout()
+        tags_layout.addWidget(QLabel("Metadata Tags:"))
+        self.tags_input = QLineEdit()
+        self.tags_input.setPlaceholderText("e.g., robot:husky, env:warehouse")
+        tags_layout.addWidget(self.tags_input)
+        control_layout.addLayout(tags_layout)
         
         control_group.setLayout(control_layout)
         layout.addWidget(control_group)
@@ -117,13 +180,14 @@ class NetworkUploadWidget(QWidget):
         ])
         
         header = self.pending_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.Fixed)
-        header.setMinimumSectionSize(120)
-        header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        if header:
+            header.setSectionResizeMode(0, QHeaderView.Stretch)
+            header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(3, QHeaderView.Fixed)
+            header.setMinimumSectionSize(120)
+            header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
         
         pending_layout.addWidget(self.pending_table)
         
@@ -161,7 +225,8 @@ class NetworkUploadWidget(QWidget):
         self.history_table.setMaximumHeight(150)
         
         history_header = self.history_table.horizontalHeader()
-        history_header.setSectionResizeMode(0, QHeaderView.Stretch)
+        if history_header:
+            history_header.setSectionResizeMode(0, QHeaderView.Stretch)
         
         history_layout.addWidget(self.history_table)
         
@@ -209,12 +274,12 @@ class NetworkUploadWidget(QWidget):
                 
                 # Priority
                 priority_item = QTableWidgetItem(str(upload['priority']))
-                priority_item.setTextAlignment(Qt.AlignCenter)
+                priority_item.setTextAlignment(4)  # Qt.AlignCenter = 4
                 self.pending_table.setItem(idx, 1, priority_item)
                 
                 # Status
                 status_item = QTableWidgetItem(upload['status'].upper())
-                status_item.setTextAlignment(Qt.AlignCenter)
+                status_item.setTextAlignment(4)  # Qt.AlignCenter = 4
                 
                 if upload['status'] == 'completed':
                     status_item.setForeground(QColor('green'))
@@ -238,12 +303,12 @@ class NetworkUploadWidget(QWidget):
                 # File size
                 size_mb = upload['file_size'] / (1024*1024) if upload['file_size'] else 0
                 size_item = QTableWidgetItem(f"{size_mb:.2f}")
-                size_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                size_item.setTextAlignment(2 | 128)  # Qt.AlignRight | Qt.AlignVCenter = 2 | 128
                 self.pending_table.setItem(idx, 4, size_item)
                 
                 # Retry count
                 retry_item = QTableWidgetItem(str(upload['retry_count']))
-                retry_item.setTextAlignment(Qt.AlignCenter)
+                retry_item.setTextAlignment(4)  # Qt.AlignCenter = 4
                 if upload['retry_count'] > 0:
                     retry_item.setForeground(QColor('orange'))
                 self.pending_table.setItem(idx, 5, retry_item)
@@ -260,7 +325,7 @@ class NetworkUploadWidget(QWidget):
                 
                 # Status
                 status_item = QTableWidgetItem(item['status'].upper())
-                status_item.setTextAlignment(Qt.AlignCenter)
+                status_item.setTextAlignment(4)  # Qt.AlignCenter = 4
                 if item['status'] == 'completed':
                     status_item.setForeground(QColor('green'))
                 else:
@@ -274,13 +339,13 @@ class NetworkUploadWidget(QWidget):
                 # Size
                 size_mb = item['file_size'] / (1024*1024) if item['file_size'] else 0
                 size_item = QTableWidgetItem(f"{size_mb:.2f}")
-                size_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                size_item.setTextAlignment(2 | 128)  # Qt.AlignRight | Qt.AlignVCenter = 2 | 128
                 self.history_table.setItem(idx, 3, size_item)
                 
                 # Duration
                 duration = item.get('upload_duration', 0) or 0
                 duration_item = QTableWidgetItem(f"{duration:.1f}")
-                duration_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                duration_item.setTextAlignment(2 | 128)  # Qt.AlignRight | Qt.AlignVCenter = 2 | 128
                 self.history_table.setItem(idx, 4, duration_item)
                 
         except Exception as e:
@@ -292,9 +357,62 @@ class NetworkUploadWidget(QWidget):
         if new_url:
             self.network_manager.upload_url = new_url
             QMessageBox.information(self, "Success", f"Server URL updated to: {new_url}")
+    
+    def update_auth_status_display(self):
+        """Update authentication status indicator"""
+        if not self.auth_manager:
+            self.auth_status_label.setText("🔓 No Auth Module")
+            self.auth_status_label.setStyleSheet("color: gray; font-weight: bold;")
+            return
+        
+        try:
+            status = self.auth_manager.get_status()
+            api_key = self.api_key_input.text().strip()
+            
+            if status['enabled']:
+                if api_key:
+                    # Verify the token
+                    is_valid, message = self.auth_manager.verify_token(api_key)
+                    if is_valid:
+                        self.auth_status_label.setText("🔒 Auth Valid")
+                        self.auth_status_label.setStyleSheet("color: green; font-weight: bold;")
+                    else:
+                        self.auth_status_label.setText("🔐 Auth Invalid")
+                        self.auth_status_label.setStyleSheet("color: red; font-weight: bold;")
+                else:
+                    self.auth_status_label.setText("🔐 Auth Required")
+                    self.auth_status_label.setStyleSheet("color: orange; font-weight: bold;")
+            else:
+                self.auth_status_label.setText("🔓 Auth Disabled")
+                self.auth_status_label.setStyleSheet("color: gray; font-weight: bold;")
+        except Exception as e:
+            self.auth_status_label.setText(f"⚠️ Error: {str(e)[:20]}")
+            self.auth_status_label.setStyleSheet("color: red; font-weight: bold;")
             
     def manual_upload(self):
         """Manually select a file to upload"""
+        # Check authentication if enabled
+        if self.auth_manager:
+            status = self.auth_manager.get_status()
+            if status['enabled']:
+                api_key = self.api_key_input.text().strip()
+                if not api_key:
+                    QMessageBox.warning(self, "Authentication Required", 
+                                      "Authentication is enabled. Please enter a valid API key.")
+                    return
+                
+                is_valid, message = self.auth_manager.verify_token(api_key)
+                if not is_valid:
+                    QMessageBox.warning(self, "Invalid API Key", f"Authentication failed: {message}")
+                    return
+                
+                # Check rate limit
+                can_upload, limit_msg = self.auth_manager.check_rate_limit(api_key)
+                if not can_upload:
+                    QMessageBox.warning(self, "Rate Limit Exceeded", 
+                                      f"Rate limit exceeded: {limit_msg}")
+                    return
+        
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Select File to Upload", "", "All Files (*.*)"
         )
@@ -305,6 +423,10 @@ class NetworkUploadWidget(QWidget):
                 'source': 'manual_upload',
                 'timestamp': str(int(time.time()))
             }
+            
+            # Add API token to metadata if provided
+            if self.auth_manager and self.api_key_input.text().strip():
+                metadata['api_token'] = self.api_key_input.text().strip()
             
             self.network_manager.add_upload(file_path, priority, metadata)
             QMessageBox.information(self, "Success", f"File added to upload queue: {os.path.basename(file_path)}")
@@ -363,4 +485,76 @@ class NetworkUploadWidget(QWidget):
             QMessageBox.information(self, "Success", f"Cleared {cleared_count} completed upload(s) from the list")
             self.update_display()
         except Exception as e:
-            QMessageBox.warning(self, "Error", f"Failed to clear uploads: {str(e)}")
+            QMessageBox.warning(self, "Error", f"Failed to clear completed uploads: {str(e)}")
+    
+    def batch_upload_all(self):
+        """Upload all pending bags in batches"""
+        # Check authentication if enabled
+        if self.auth_manager:
+            status = self.auth_manager.get_status()
+            if status['enabled']:
+                api_key = self.api_key_input.text().strip()
+                if not api_key:
+                    QMessageBox.warning(self, "Authentication Required", 
+                                      "Authentication is enabled. Please enter a valid API key.")
+                    return
+                
+                is_valid, message = self.auth_manager.verify_token(api_key)
+                if not is_valid:
+                    QMessageBox.warning(self, "Invalid API Key", f"Authentication failed: {message}")
+                    return
+                
+                # Check rate limit
+                can_upload, limit_msg = self.auth_manager.check_rate_limit(api_key)
+                if not can_upload:
+                    QMessageBox.warning(self, "Rate Limit Exceeded", 
+                                      f"Rate limit exceeded: {limit_msg}")
+                    return
+        
+        try:
+            pending = self.network_manager.get_pending_uploads()
+            pending_uploads = [u for u in pending if u['status'] in ['pending', 'failed']]
+            
+            if not pending_uploads:
+                QMessageBox.information(self, "No Pending Uploads", "There are no pending uploads")
+                return
+            
+            batch_size = self.batch_size_spin.value()
+            max_retries = self.retries_spin.value()
+            tags = self.tags_input.text()
+            compress = self.compression_check.isChecked()
+            
+            # Group uploads into batches
+            batches = [pending_uploads[i:i + batch_size] for i in range(0, len(pending_uploads), batch_size)]
+            
+            QMessageBox.information(
+                self, 
+                "Batch Upload Started", 
+                f"Starting batch upload of {len(pending_uploads)} recording(s) in {len(batches)} batch(es)\n"
+                f"Batch size: {batch_size}\n"
+                f"Max retries: {max_retries}\n"
+                f"Compression: {'Enabled' if compress else 'Disabled'}\n"
+                f"Metadata tags: {tags if tags else 'None'}"
+            )
+            
+            # Send all uploads with metadata
+            for upload in pending_uploads:
+                metadata = {
+                    'tags': tags,
+                    'compressed': compress,
+                    'max_retries': max_retries,
+                    'batch_upload': True,
+                    'timestamp': str(int(time.time()))
+                }
+                
+                # Add API token if auth is enabled
+                if self.auth_manager and self.api_key_input.text().strip():
+                    metadata['api_token'] = self.api_key_input.text().strip()
+                
+                self.network_manager.update_upload_metadata(upload['file_path'], metadata)
+            
+            # Update display
+            self.update_display()
+            
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to start batch upload: {str(e)}")

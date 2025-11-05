@@ -14,6 +14,12 @@ import threading
 import time
 import subprocess
 
+# Import dynamic scaling for 1000+ topics support
+try:
+    from core.dynamic_hz_scaling import DynamicHzScaler
+except ImportError:
+    DynamicHzScaler = None  # Fallback if not available
+
 
 class HzMonitorThread(QThread):
     """Background thread that monitors topic publishing rates"""
@@ -50,7 +56,13 @@ class HzMonitorThread(QThread):
 
                 hz_rates = {}
 
-                max_workers = min(8, max(1, len(topics)))
+                # ⚡ DYNAMIC SCALING: Use DynamicHzScaler for 1000+ topic support
+                if DynamicHzScaler:
+                    config = DynamicHzScaler.calculate_optimal_workers(len(topics))
+                    max_workers = config.get('max_workers', 8)
+                else:
+                    max_workers = min(8, max(1, len(topics)))
+                
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
                     future_map = {executor.submit(self._get_hz_for_topic, t): t for t in topics}
                     for future in as_completed(future_map, timeout=None):
@@ -266,7 +278,7 @@ class RecordingControlWidget(QWidget):
             
     def start_recording(self, robot_metadata=None):
         """
-        Start bag recording
+        Start bag recording - OPTIMIZED for speed
         
         Args:
             robot_metadata: Optional dict with robot info (hostname, topics, etc.)
@@ -291,18 +303,23 @@ class RecordingControlWidget(QWidget):
         else:
             bag_name = f"{prefix}_{timestamp}"
         
-        # Save robot metadata to JSON if provided
+        # Save robot metadata to JSON if provided (async to avoid blocking)
         if robot_metadata:
-            metadata_file = os.path.join(output_dir, f"{bag_name}_robot_info.json")
-            try:
-                import json
-                with open(metadata_file, 'w') as f:
-                    json.dump(robot_metadata, f, indent=2)
-                print(f"✅ Saved robot metadata to {metadata_file}")
-            except Exception as e:
-                print(f"⚠️ Could not save robot metadata: {e}")
+            def _save_metadata():
+                metadata_file = os.path.join(output_dir, f"{bag_name}_robot_info.json")
+                try:
+                    import json
+                    with open(metadata_file, 'w') as f:
+                        json.dump(robot_metadata, f, indent=2)
+                    print(f"✅ Saved robot metadata to {metadata_file}")
+                except Exception as e:
+                    print(f"⚠️ Could not save robot metadata: {e}")
+            
+            # Run in background thread to avoid UI blocking
+            import threading
+            threading.Thread(target=_save_metadata, daemon=True).start()
         
-        # Start recording
+        # Start recording - CRITICAL: This is the main operation
         success = self.ros2_manager.start_recording(bag_name)
         
         if success:
@@ -324,20 +341,20 @@ class RecordingControlWidget(QWidget):
                 robot_info = ""
             self.recording_info.setText(f"Recording to: {bag_path}{robot_info}")
             
-            # Start rate monitoring
+            # Start rate monitoring (async)
             self.start_rate_monitoring()
             
             # Tell Hz monitor thread to watch these topics
             self.hz_monitor_thread.set_topics(list(self.selected_topics_data.keys()))
             
+            # ⚡ FAST EMIT - signal listeners immediately
             self.recording_started.emit()
         else:
             QMessageBox.critical(self, "Error", "Failed to start recording. Make sure ROS2 is running.")
             
     def stop_recording(self):
-        """Stop bag recording"""
-        self.ros2_manager.stop_recording()
-        
+        """Stop bag recording - OPTIMIZED for speed"""
+        # Stop immediately on UI
         self.is_recording = False
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
@@ -345,6 +362,21 @@ class RecordingControlWidget(QWidget):
         self.name_input.setEnabled(True)
         
         self.status_label.setText("Status: Stopped")
+        self.status_label.setStyleSheet("color: green;")
+        
+        # ⚡ EMIT SIGNAL FIRST - listeners can start preparing
+        self.recording_stopped.emit()
+        
+        # THEN stop in background to avoid UI delay
+        # Use threading to avoid blocking UI
+        def _do_stop():
+            try:
+                self.ros2_manager.stop_recording()
+            except Exception as e:
+                print(f"Stop recording error: {e}")
+        
+        import threading
+        threading.Thread(target=_do_stop, daemon=True).start()
         self.status_label.setStyleSheet("color: orange;")
         
         self.recording_info.setText("Recording stopped successfully")

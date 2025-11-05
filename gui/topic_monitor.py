@@ -36,6 +36,13 @@ class TopicMonitorWidget(QWidget):
         self._refresh_debounce_timer.setSingleShot(True)
         self._refresh_debounce_timer.timeout.connect(self._do_refresh)
         
+        # NEW: Periodic Hz refresh timer (every 10 seconds for real-time monitoring)
+        self._hz_refresh_timer = QTimer()
+        self._hz_refresh_timer.setSingleShot(False)
+        self._hz_refresh_timer.timeout.connect(self._periodic_hz_refresh)
+        self._current_topics_info = []  # Cache for periodic refresh
+        self._is_recording = False  # Track recording state
+        
         self.init_ui()
         
     def init_ui(self):
@@ -65,9 +72,9 @@ class TopicMonitorWidget(QWidget):
         
         # Topics table - OPTIMIZED FOR SMOOTH SCROLLING
         self.topics_table = QTableWidget()
-        self.topics_table.setColumnCount(5)
+        self.topics_table.setColumnCount(6)
         self.topics_table.setHorizontalHeaderLabels([
-            "Record", "Topic Name", "Message Type", "Publishers", "Hz"
+            "Record", "Topic Name", "Message Type", "Publishers", "Hz", "Status"
         ])
         
         # CRITICAL PERFORMANCE: Disable sorting to prevent layout recalculation
@@ -90,6 +97,7 @@ class TopicMonitorWidget(QWidget):
             header.setSectionResizeMode(2, QHeaderView.Stretch)
             header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
             header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(5, QHeaderView.ResizeToContents)  # NEW: Status column
         
         group_layout.addWidget(self.topics_table)
         
@@ -155,6 +163,9 @@ class TopicMonitorWidget(QWidget):
     def _on_topics_ready(self, topics_info):
         """Callback when topics data is ready from async operation"""
         try:
+            # Cache topics for periodic refresh
+            self._current_topics_info = topics_info
+            
             self.update_topics_data(topics_info)
             
             # AFTER displaying topics with 0.0 Hz, fetch actual Hz values in background
@@ -166,6 +177,25 @@ class TopicMonitorWidget(QWidget):
             if self._pending_update:
                 self._pending_update = False
                 self._do_refresh()
+    
+    def set_recording_state(self, is_recording):
+        """Track recording state to enable/disable real-time Hz monitoring"""
+        self._is_recording = is_recording
+        
+        # Start periodic Hz refresh when recording starts
+        if is_recording:
+            if not self._hz_refresh_timer.isActive():
+                self._hz_refresh_timer.start(10000)  # Refresh every 10 seconds
+        else:
+            # Stop periodic Hz refresh when recording stops
+            if self._hz_refresh_timer.isActive():
+                self._hz_refresh_timer.stop()
+    
+    def _periodic_hz_refresh(self):
+        """Periodically refresh Hz values during recording (real-time monitoring)"""
+        if self._current_topics_info and self._is_recording:
+            # Fetch fresh Hz values in background without blocking UI
+            self._start_background_hz_fetch(self._current_topics_info)
             
     def _start_background_hz_fetch(self, topics_info):
         """Start background task to fetch Hz values without blocking UI"""
@@ -398,6 +428,21 @@ class TopicMonitorWidget(QWidget):
                     self.topics_table.setItem(idx, 4, hz_item)
                 elif hz_item.text() != hz_text:
                     hz_item.setText(hz_text)
+                
+                # NEW: Update or create status column
+                pub_count = topic_info.get('publisher_count', 0)
+                status_text = "Publishing" if pub_count > 0 else "Idle"
+                status_color = QColor('green') if pub_count > 0 else QColor('orange')
+                
+                status_item = self.topics_table.item(idx, 5)
+                if status_item is None:
+                    status_item = QTableWidgetItem(status_text)
+                    status_item.setTextAlignment(Qt.AlignCenter)
+                    self.topics_table.setItem(idx, 5, status_item)
+                else:
+                    status_item.setText(status_text)
+                
+                status_item.setForeground(status_color)
             
             # Re-enable updates and force single repaint (instead of incremental)
             self.topics_table.setUpdatesEnabled(True)
