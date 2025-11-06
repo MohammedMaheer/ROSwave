@@ -212,6 +212,16 @@ class NetworkManager:
         if not os.path.exists(file_path):
             print(f"File not found: {file_path}")
             return False
+        
+        # Skip directories - only upload actual files
+        if os.path.isdir(file_path):
+            # Silently skip directories (they may be recording in progress)
+            return False
+        
+        # Only upload .db3 files (ROS2 bag recordings)
+        if not file_path.endswith('.db3'):
+            # Silently skip non-bag files
+            return False
             
         # Create upload task
         task = UploadTask(file_path, priority, metadata)
